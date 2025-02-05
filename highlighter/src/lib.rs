@@ -25,6 +25,7 @@ mod tests;
 // mod pretty_print;
 #[cfg(feature = "fixtures")]
 pub mod fixtures;
+pub mod locals;
 pub mod query_iter;
 pub mod text_object;
 // mod tree_cursor;
