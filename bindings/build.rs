@@ -22,6 +22,7 @@ fn main() {
         .flag_if_supported("-Wshadow")
         .flag_if_supported("-Wno-unused-parameter")
         .flag_if_supported("-Wno-incompatible-pointer-types")
+        .flag_if_supported("-O3")
         .include(&src_path)
         .include(&include_path)
         .define("_POSIX_C_SOURCE", "200112L")

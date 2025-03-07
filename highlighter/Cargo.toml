@@ -23,7 +23,7 @@ hashbrown = { version = "0.15" }
 regex = "1"
 regex-cursor = "0.1"
 slab = "0.4"
-unicode-width = { version = "=0.1.12", optional = true }
+unicode-width = { version = "0.2", optional = true }
 pretty_assertions = { version = "1.4.0", optional = true }
 kstring = "2.0"
 
