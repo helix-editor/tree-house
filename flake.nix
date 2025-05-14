@@ -3,22 +3,38 @@
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
-    rust-overlay.url = "github:oxalica/rust-overlay";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
-    { nixpkgs, rust-overlay, ... }:
+    { self, nixpkgs, rust-overlay }:
     let
       inherit (nixpkgs) lib;
       forEachSystem = lib.genAttrs lib.systems.flakeExposed;
     in
     {
+      packages = forEachSystem (
+        system:
+        let
+          pkgs = import nixpkgs {
+            inherit system;
+            overlays = [ (import rust-overlay) ];
+          };
+          toolchain = pkgs.rust-bin.stable.latest.default;
+        in {
+          skidder-cli = pkgs.callPackage ./. { };
+          default = self.packages.${system}.skidder-cli;
+        });
+    
       devShell = forEachSystem (
         system:
         let
           pkgs = import nixpkgs {
             inherit system;
-            overlays = [ rust-overlay.overlays.default ];
+            overlays = [ (import rust-overlay) ];
           };
           toolchain = pkgs.rust-bin.stable.latest.default;
         in
