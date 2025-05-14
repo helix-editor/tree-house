@@ -10,7 +10,11 @@
   };
 
   outputs =
-    { self, nixpkgs, rust-overlay }:
+    {
+      self,
+      nixpkgs,
+      rust-overlay,
+    }:
     let
       inherit (nixpkgs) lib;
       forEachSystem = lib.genAttrs lib.systems.flakeExposed;
@@ -24,11 +28,13 @@
             overlays = [ (import rust-overlay) ];
           };
           toolchain = pkgs.rust-bin.stable.latest.default;
-        in {
-          skidder-cli = pkgs.callPackage ./. { };
+        in
+        {
+          skidder-cli = pkgs.callPackage ./. { gitRev = self.rev or self.dirtyRev; };
           default = self.packages.${system}.skidder-cli;
-        });
-    
+        }
+      );
+
       devShell = forEachSystem (
         system:
         let

@@ -11,6 +11,18 @@ mod import;
 mod init;
 mod load;
 
+fn get_version() -> String {
+    const GIT_HASH: Option<&str> = option_env!("GIT_HASH");
+    const CARGO_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+    let owned = CARGO_VERSION.to_string();
+    if let Some(hash) = GIT_HASH {
+        owned + "-" + hash
+    } else {
+        owned
+    }
+}
+
 fn wrapped_main() -> Result<()> {
     let flags = flags::Skidder::from_env_or_exit();
     match flags.subcommand {
@@ -21,7 +33,7 @@ fn wrapped_main() -> Result<()> {
         flags::SkidderCmd::RegenerateParser(generate_cmd) => generate_cmd.run(),
         flags::SkidderCmd::Version(flags::Version { version }) => {
             if version {
-                println!("skidder-cli {}", env!("CARGO_PKG_VERSION"));
+                println!("skidder-cli {}", get_version());
             } else {
                 println!("{}", flags::Skidder::HELP);
             }

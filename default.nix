@@ -1,18 +1,23 @@
 {
   lib,
   rustPlatform,
-}: let
-    fs = lib.fileset;
 
-    files = fs.difference (fs.gitTracked ./.) (fs.unions [
+  gitRev ? null,
+}:
+let
+  fs = lib.fileset;
+
+  files = fs.difference (fs.gitTracked ./.) (
+    fs.unions [
       ./.github
       ./.envrc
       ./flake.lock
       (fs.fileFilter (file: lib.strings.hasInfix ".git" file.name) ./.)
       (fs.fileFilter (file: file.hasExt "md") ./.)
       (fs.fileFilter (file: file.hasExt "nix") ./.)
-    ]);
-  in
+    ]
+  );
+in
 rustPlatform.buildRustPackage {
   strictDeps = true;
   pname = with builtins; (fromTOML (readFile ./cli/Cargo.toml)).package.name;
@@ -31,5 +36,7 @@ rustPlatform.buildRustPackage {
   cargoBuildFlags = [ "-p skidder-cli" ];
 
   doCheck = false;
+  env.GIT_HASH = gitRev;
+
   meta.mainProgram = "skidder-cli";
 }
