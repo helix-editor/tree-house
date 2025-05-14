@@ -19,6 +19,12 @@ fn wrapped_main() -> Result<()> {
         flags::SkidderCmd::InitRepo(init_cmd) => init_cmd.run(),
         flags::SkidderCmd::LoadGrammar(load_cmd) => load_cmd.run(),
         flags::SkidderCmd::RegenerateParser(generate_cmd) => generate_cmd.run(),
+        flags::SkidderCmd::Version(flags::Version { version }) => {
+            if version {
+                println!("skidder-cli {}", env!("CARGO_PKG_VERSION"));
+            }
+            Ok(())
+        }
     }
 }
 
