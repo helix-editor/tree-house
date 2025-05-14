@@ -170,10 +170,27 @@ impl Syntax {
             .descendant_for_byte_range(start, end)
     }
 
+    /// # Returns
+    ///
+    /// The smallest injection layer that fully includes the range `start..=end`.
     pub fn layer_for_byte_range(&self, start: u32, end: u32) -> Layer {
-        let mut cursor = self.root;
+        self.layers_for_byte_range(start, end)
+            .pop()
+            .expect("`self.root` is the first layer")
+    }
+
+    /// # Returns
+    ///
+    /// A list of layers which **fully include** the byte range `start..=end`,
+    /// in decreasing order based on the size of each layer.
+    ///
+    /// The first layer is the `root` layer.
+    pub fn layers_for_byte_range(&self, start: u32, end: u32) -> Vec<Layer> {
+        let mut layers = Vec::with_capacity(self.layers.len());
+        layers.push(self.root);
+
         loop {
-            let layer = &self.layers[cursor.idx()];
+            let layer = &self.layers[layers.last().expect("`self.root` is the first layer").idx()];
             let Some(start_injection) = layer.injection_at_byte_idx(start) else {
                 break;
             };
@@ -182,12 +199,13 @@ impl Syntax {
                 break;
             };
             if start_injection.layer == end_injection.layer {
-                cursor = start_injection.layer;
+                layers.push(start_injection.layer);
             } else {
                 break;
             }
         }
-        cursor
+
+        layers
     }
 
     pub fn walk(&self) -> TreeCursor {
