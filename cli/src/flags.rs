@@ -35,6 +35,9 @@ xflags::xflags! {
             optional -r, --recursive
             required path: PathBuf
         }
+        default cmd version {
+            optional --version
+        }
     }
 }
 // generated start
@@ -47,11 +50,17 @@ pub struct Skidder {
 
 #[derive(Debug)]
 pub enum SkidderCmd {
+    Version(Version),
     Import(Import),
     Build(Build),
     InitRepo(InitRepo),
     LoadGrammar(LoadGrammar),
     RegenerateParser(RegenerateParser),
+}
+
+#[derive(Debug)]
+pub struct Version {
+    pub version: bool,
 }
 
 #[derive(Debug)]
