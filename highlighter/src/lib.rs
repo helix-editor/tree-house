@@ -175,37 +175,37 @@ impl Syntax {
     /// The smallest injection layer that fully includes the range `start..=end`.
     pub fn layer_for_byte_range(&self, start: u32, end: u32) -> Layer {
         self.layers_for_byte_range(start, end)
-            .pop()
+            .last()
             .expect("`self.root` is the first layer")
     }
 
     /// # Returns
     ///
-    /// A list of layers which **fully include** the byte range `start..=end`,
+    /// A iterator of layers which **fully include** the byte range `start..=end`,
     /// in decreasing order based on the size of each layer.
     ///
     /// The first layer is the `root` layer.
-    pub fn layers_for_byte_range(&self, start: u32, end: u32) -> Vec<Layer> {
-        let mut layers = Vec::with_capacity(self.layers.len());
-        layers.push(self.root);
+    pub fn layers_for_byte_range(
+        &self,
+        start: u32,
+        end: u32,
+    ) -> impl Iterator<Item = Layer> + use<'_> {
+        let mut parent_injection_layer = self.root;
 
-        loop {
-            let layer = &self.layers[layers.last().expect("`self.root` is the first layer").idx()];
-            let Some(start_injection) = layer.injection_at_byte_idx(start) else {
-                break;
-            };
+        std::iter::from_fn(move || {
+            let layer = &self.layers[parent_injection_layer.idx()];
+
+            let injection_at_start = layer.injection_at_byte_idx(start)?;
+
             // +1 because the end is exclusive.
-            let Some(end_injection) = layer.injection_at_byte_idx(end + 1) else {
-                break;
-            };
-            if start_injection.layer == end_injection.layer {
-                layers.push(start_injection.layer);
-            } else {
-                break;
-            }
-        }
+            let injection_at_end = layer.injection_at_byte_idx(end + 1)?;
 
-        layers
+            (injection_at_start.layer == injection_at_end.layer).then(|| {
+                parent_injection_layer = injection_at_start.layer;
+
+                injection_at_start.layer
+            })
+        })
     }
 
     pub fn walk(&self) -> TreeCursor {
