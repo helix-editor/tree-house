@@ -95,6 +95,14 @@ impl<'tree> Node<'tree> {
         unsafe { ts_node_is_named(self.as_raw()) }
     }
 
+    /// Returns true if and only if this node is contained "inside" the given
+    /// input range, i.e. either start_new > start_old and end_new <= end_old OR
+    /// start_new >= start_old and end_new < end_old
+    pub fn is_contained_within(&self, range: Range<u32>) -> bool {
+        (self.start_byte() > range.start && self.end_byte() <= range.end)
+            || (self.start_byte() >= range.start && self.end_byte() < range.end)
+    }
+
     /// Check if this node is *missing*.
     ///
     /// Missing nodes are inserted by the parser in order to recover from

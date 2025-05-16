@@ -1,5 +1,6 @@
 use ::std::os::raw;
 use std::cell::Cell;
+use std::collections::VecDeque;
 use std::ffi::{c_char, CStr};
 use std::marker::PhantomData;
 use std::{fmt, mem};
@@ -76,6 +77,10 @@ impl<'tree> TreeCursor<'tree> {
         }
     }
 
+    pub fn reset(&mut self, node: Node<'tree>) {
+        unsafe { ts_tree_cursor_reset(&mut self.inner, node.as_raw()) }
+    }
+
     pub fn node(&self) -> Node<'tree> {
         unsafe { Node::from_raw(ts_tree_cursor_current_node(&self.inner)).unwrap_unchecked() }
     }
@@ -106,6 +111,54 @@ impl Clone for TreeCursor<'_> {
             inner: unsafe { ts_tree_cursor_copy(&self.inner) },
             tree: PhantomData,
         }
+    }
+}
+
+impl<'tree> IntoIterator for &'tree mut TreeCursor<'tree> {
+    type Item = Node<'tree>;
+    type IntoIter = TreeRecursiveWalker<'tree>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let mut queue = VecDeque::new();
+        let root = self.node();
+        queue.push_back(root.clone());
+
+        TreeRecursiveWalker {
+            cursor: self,
+            queue,
+            root,
+        }
+    }
+}
+
+pub struct TreeRecursiveWalker<'tree> {
+    cursor: &'tree mut TreeCursor<'tree>,
+    queue: VecDeque<Node<'tree>>,
+    root: Node<'tree>,
+}
+
+impl<'tree> Iterator for TreeRecursiveWalker<'tree> {
+    type Item = Node<'tree>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let current = self.cursor.node();
+
+        if current != self.root && self.cursor.goto_next_sibling() {
+            self.queue.push_back(current);
+            return Some(self.cursor.node());
+        }
+
+        while let Some(queued) = self.queue.pop_front() {
+            self.cursor.reset(queued);
+
+            if !self.cursor.goto_first_child() {
+                continue;
+            }
+
+            return Some(self.cursor.node());
+        }
+
+        None
     }
 }
 
