@@ -176,7 +176,7 @@ impl Syntax {
     pub fn layer_for_byte_range(&self, start: u32, end: u32) -> Layer {
         self.layers_for_byte_range(start, end)
             .last()
-            .expect("`self.root` is the first layer")
+            .unwrap_or(self.root)
     }
 
     /// # Returns
