@@ -199,6 +199,7 @@ impl InjectionsQuery {
         node_idx: MatchedNodeIdx,
         source: RopeSlice<'a>,
         loader: impl LanguageLoader,
+        path: Option<&'a std::path::PathBuf>,
     ) -> Option<InjectionQueryMatch<'tree>> {
         let properties = self
             .injection_properties
@@ -246,10 +247,22 @@ impl InjectionsQuery {
                 last_content_node = i as u32;
             }
         }
-        let marker = marker.or(properties
-            .language
-            .as_deref()
-            .map(InjectionLanguageMarker::Name))?;
+
+        let marker = marker.or_else(|| {
+            properties.language.as_deref().map(|lang| {
+                InjectionLanguageMarker::Name(
+                    (lang == "<use-2nd-filename-extension>")
+                        .then(|| {
+                            // index.html.tera
+                            // => extract the 2nd extension `html`
+                            path.and_then(|p| p.to_str())
+                                .and_then(|p| p.rsplit('.').rev().nth(1))
+                        })
+                        .flatten()
+                        .unwrap_or(lang),
+                )
+            })
+        })?;
 
         let language = loader.language_for_marker(marker)?;
         let scope = if properties.combined {
@@ -294,6 +307,7 @@ impl InjectionsQuery {
         node: &Node<'a>,
         source: RopeSlice<'a>,
         loader: &'a impl LanguageLoader,
+        path: Option<std::path::PathBuf>,
     ) -> impl Iterator<Item = InjectionQueryMatch<'a>> + 'a {
         let mut cursor = InactiveQueryCursor::new();
         cursor.set_byte_range(0..u32::MAX);
@@ -305,7 +319,9 @@ impl InjectionsQuery {
             if query_match.matched_node(node_idx).capture != injection_content_capture {
                 continue;
             }
-            let Some(mat) = self.process_match(&query_match, node_idx, source, loader) else {
+            let Some(mat) =
+                self.process_match(&query_match, node_idx, source, loader, path.as_ref())
+            else {
                 query_match.remove();
                 continue;
             };
@@ -391,7 +407,8 @@ impl Syntax {
         let mut injections: Vec<Injection> = Vec::with_capacity(layer_data.injections.len());
         let mut old_injections = take(&mut layer_data.injections).into_iter().peekable();
 
-        let injection_query = injections_query.execute(&parse_tree.root_node(), source, loader);
+        let injection_query =
+            injections_query.execute(&parse_tree.root_node(), source, loader, self.path.clone());
 
         let mut combined_injections: HashMap<InjectionScope, Layer> = HashMap::with_capacity(32);
         for mat in injection_query {
