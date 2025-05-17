@@ -67,7 +67,7 @@ impl Language {
 ///   parsed as though they are a single uninterrupted file.
 ///
 /// An injection always refer to a single node into which another layer is
-/// injected. As injections only corresp9ond to syntax tree nodes injections in
+/// injected. As injections only correspond to syntax tree nodes injections in
 /// the same layer do not intersect. However, the syntax tree in a an injected
 /// layer can have nodes that intersect with nodes from the parent layer. For
 /// example:
