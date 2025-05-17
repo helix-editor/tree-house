@@ -185,11 +185,7 @@ impl Syntax {
     /// in decreasing order based on the size of each layer.
     ///
     /// The first layer is the `root` layer.
-    pub fn layers_for_byte_range(
-        &self,
-        start: u32,
-        end: u32,
-    ) -> impl Iterator<Item = Layer> + use<'_> {
+    pub fn layers_for_byte_range(&self, start: u32, end: u32) -> impl Iterator<Item = Layer> {
         let mut parent_injection_layer = self.root;
 
         std::iter::from_fn(move || {
