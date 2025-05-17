@@ -123,7 +123,11 @@ impl<'tree, I: Input> QueryCursor<'_, 'tree, I> {
 
 impl<I: Input> Drop for QueryCursor<'_, '_, I> {
     fn drop(&mut self) {
-        unsafe { with_cache(|cache| cache.push(InactiveQueryCursor { ptr: self.ptr })) }
+        let mut cursor = InactiveQueryCursor { ptr: self.ptr };
+        // Reset the cursor back to defaults.
+        cursor.set_byte_range(0..u32::MAX);
+        cursor.set_match_limit(u32::MAX);
+        unsafe { with_cache(|cache| cache.push(cursor)) }
     }
 }
 
