@@ -176,7 +176,7 @@ impl Syntax {
     pub fn layer_for_byte_range(&self, start: u32, end: u32) -> Layer {
         self.layers_for_byte_range(start, end)
             .last()
-            .unwrap_or(self.root)
+            .expect("always includes the root layer")
     }
 
     /// # Returns
@@ -188,7 +188,7 @@ impl Syntax {
     pub fn layers_for_byte_range(&self, start: u32, end: u32) -> impl Iterator<Item = Layer> + '_ {
         let mut parent_injection_layer = self.root;
 
-        std::iter::from_fn(move || {
+        std::iter::once(self.root).chain(std::iter::from_fn(move || {
             let layer = &self.layers[parent_injection_layer.idx()];
 
             let injection_at_start = layer.injection_at_byte_idx(start)?;
@@ -201,7 +201,7 @@ impl Syntax {
 
                 injection_at_start.layer
             })
-        })
+        }))
     }
 
     pub fn walk(&self) -> TreeCursor {
