@@ -288,7 +288,6 @@ pub fn hello() {}";
 
         let layers = syntax
             .layers_for_byte_range(snippet_start, snippet_end)
-            .into_iter()
             .map(layer_lang_name)
             .collect::<Vec<_>>();
 
