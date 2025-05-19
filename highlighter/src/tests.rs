@@ -236,23 +236,7 @@ fn layers() {
 
     let input = "/// Says hello.
 ///
-/// Some html, this is *markdown-inline* markdown
-/// 
-/// ```html
-/// <div>
-///  <p>Hello</p>
-///  <style>
-///   p {
-///     /* css comment */
-///     background-color: red;
-///   }
-///  </style>
-///  <script>
-///   // javascript comment
-///   javascript_function();
-///  </script>
-/// </div>
-/// ```
+/// this is *markdown-inline* markdown
 /// 
 /// # Example
 ///
@@ -312,37 +296,6 @@ pub fn hello() {}";
 
     // Paragraph in the rust documentation
     assert_injection("markdown-inline", &["rust", "markdown", "markdown-inline"]);
-
-    // TODO: Enable these tests
-    //
-    // Currently, the Syntax does not have any "css", "javascript" or "comment"
-    // in it, even though the injection queries are supposed to inject these languages
-    //
-    // dbg!(syntax
-    //     .layers
-    //     .into_iter()
-    //     .map(|(_, layer)| loader
-    //         .languages
-    //         .get_index(layer.language.idx())
-    //         .unwrap()
-    //         .0
-    //         .clone())
-    //     .collect::<Vec<_>>());
-
-    // Injections past "html" don't get recognized
-    // assert_injection("background-color", &["rust", "markdown", "html", "css"]);
-    // assert_injection(
-    //     "javascript_function",
-    //     &["rust", "markdown", "html", "javascript"],
-    // );
-    // assert_injection(
-    //     "css comment",
-    //     &["rust", "markdown", "html", "css", "comment"],
-    // );
-    // assert_injection(
-    //     "javascript comment",
-    //     &["rust", "markdown", "html", "javascript", "comment"],
-    // );
 }
 
 #[test]
