@@ -140,7 +140,14 @@ pub fn roundtrip_highlighter_fixture<R: RangeBounds<usize>>(
     range: impl Fn(RopeSlice) -> R,
 ) -> String {
     let raw = strip_annotations(src, comment_prefix);
-    let syntax = Syntax::new(raw.slice(..), language, Duration::from_secs(60), loader).unwrap();
+    let syntax = Syntax::new(
+        raw.slice(..),
+        language,
+        Duration::from_secs(60),
+        loader,
+        None,
+    )
+    .unwrap();
     let range = range(raw.slice(..));
     highlighter_fixture(
         comment_prefix,
@@ -161,7 +168,14 @@ pub fn roundtrip_injection_fixture<R: RangeBounds<usize>>(
     range: impl Fn(RopeSlice) -> R,
 ) -> String {
     let raw = strip_annotations(src, comment_prefix);
-    let syntax = Syntax::new(raw.slice(..), language, Duration::from_secs(60), loader).unwrap();
+    let syntax = Syntax::new(
+        raw.slice(..),
+        language,
+        Duration::from_secs(60),
+        loader,
+        None,
+    )
+    .unwrap();
     let range = range(raw.slice(..));
     injections_fixture(
         comment_prefix,

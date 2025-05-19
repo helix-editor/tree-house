@@ -5,6 +5,7 @@ use slab::Slab;
 
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
 use std::time::Duration;
 use tree_sitter::{IncompatibleGrammarError, Node, Tree};
 
@@ -85,6 +86,7 @@ impl Language {
 pub struct Syntax {
     layers: Slab<LayerData>,
     root: Layer,
+    path: Option<PathBuf>,
 }
 
 impl Syntax {
@@ -93,6 +95,7 @@ impl Syntax {
         language: Language,
         timeout: Duration,
         loader: &impl LanguageLoader,
+        path: Option<PathBuf>,
     ) -> Result<Self, Error> {
         let root_layer = LayerData {
             parse_tree: None,
@@ -113,6 +116,7 @@ impl Syntax {
         let mut syntax = Self {
             root: Layer(root as u32),
             layers,
+            path,
         };
 
         syntax.update(source, timeout, &[], loader).map(|_| syntax)
