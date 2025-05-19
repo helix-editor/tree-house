@@ -118,3 +118,7 @@ impl Skidder {
     }
 }
 // generated end
+
+impl Skidder {
+    pub const HELP: &str = Self::HELP_;
+}

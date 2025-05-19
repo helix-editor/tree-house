@@ -22,6 +22,8 @@ fn wrapped_main() -> Result<()> {
         flags::SkidderCmd::Version(flags::Version { version }) => {
             if version {
                 println!("skidder-cli {}", env!("CARGO_PKG_VERSION"));
+            } else {
+                println!("{}", flags::Skidder::HELP);
             }
             Ok(())
         }
