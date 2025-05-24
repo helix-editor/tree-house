@@ -170,21 +170,17 @@ impl Syntax {
             .descendant_for_byte_range(start, end)
     }
 
-    /// # Returns
-    ///
-    /// The smallest injection layer that fully includes the range `start..=end`.
+    /// Finds the smallest injection layer that fully includes the range `start..=end`.
     pub fn layer_for_byte_range(&self, start: u32, end: u32) -> Layer {
         self.layers_for_byte_range(start, end)
             .last()
             .expect("always includes the root layer")
     }
 
-    /// # Returns
-    ///
-    /// A iterator of layers which **fully include** the byte range `start..=end`,
+    /// Returns an iterator of layers which **fully include** the byte range `start..=end`,
     /// in decreasing order based on the size of each layer.
     ///
-    /// The first layer is the `root` layer.
+    /// The first layer is always the `root` layer.
     pub fn layers_for_byte_range(&self, start: u32, end: u32) -> impl Iterator<Item = Layer> + '_ {
         let mut parent_injection_layer = self.root;
 
