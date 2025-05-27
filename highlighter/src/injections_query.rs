@@ -636,6 +636,10 @@ fn intersect_ranges(
 ) {
     let range = node.byte_range();
     let i = parent_ranges.partition_point(|parent_range| parent_range.end_byte <= range.start);
+    // If there are no possible intersections
+    if i == parent_ranges.len() {
+        return;
+    }
     let parent_ranges = parent_ranges[i..]
         .iter()
         .map(|range| range.start_byte..range.end_byte);
@@ -670,7 +674,9 @@ fn intersect_ranges_impl(
     let mut excluded_ranges = excluded_ranges.filter(|range| !range.is_empty()).peekable();
     let mut parent_ranges = parent_ranges.peekable();
     loop {
-        let parent_range = parent_ranges.peek().unwrap().clone();
+        let Some(parent_range) = parent_ranges.peek().cloned() else {
+            return;
+        };
         if let Some(excluded_range) =
             excluded_ranges.next_if(|range| range.start <= parent_range.end)
         {
@@ -703,4 +709,26 @@ fn intersect_ranges_impl(
 fn ranges_intersect(a: &Range, b: &Range) -> bool {
     // Adapted from <https://github.com/helix-editor/helix/blob/8df58b2e1779dcf0046fb51ae1893c1eebf01e7c/helix-core/src/selection.rs#L156-L163>
     a.start == b.start || (a.end > b.start && b.end > a.start)
+}
+
+#[test]
+fn intersect_ranges_impl_empty_parent_ranges() {
+    use std::ops::Range;
+
+    let root_range = 10..50;
+    let excluded = vec![20..30, 35..40];
+    let parent_ranges: Vec<Range<u32>> = Vec::new();
+    let mut results = Vec::new();
+    intersect_ranges_impl(
+        root_range,
+        excluded.into_iter(),
+        parent_ranges.into_iter(),
+        |range| results.push(range),
+    );
+
+    assert!(
+        results.is_empty(),
+        "Expected no intersected ranges: {:?}",
+        results
+    );
 }
