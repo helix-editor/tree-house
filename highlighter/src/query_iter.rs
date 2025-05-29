@@ -282,6 +282,7 @@ where
                 .peek(self.layer_manager.src, &self.layer_manager.loader)
                 .filter(|matched_node| {
                     matched_node.node.start_byte() <= self.current_injection.range.end
+                        && matched_node.node.start_byte() >= self.current_injection.range.start
                 });
 
             match (next_match, next_injection) {
