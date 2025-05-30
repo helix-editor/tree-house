@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use crate::tree_sitter::Node;
 use crate::{Layer, Syntax};
 
@@ -127,5 +129,53 @@ impl<'tree> Iterator for ChildIter<'_, 'tree> {
         } else {
             self.cursor.goto_next_sibling().then(|| self.cursor.node())
         }
+    }
+}
+
+impl<'cursor, 'tree> IntoIterator for &'cursor mut TreeCursor<'tree> {
+    type Item = Node<'tree>;
+    type IntoIter = TreeRecursiveWalker<'cursor, 'tree>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let mut queue = VecDeque::new();
+        let root = self.node();
+        queue.push_back(root.clone());
+
+        TreeRecursiveWalker {
+            cursor: self,
+            queue,
+            root,
+        }
+    }
+}
+
+pub struct TreeRecursiveWalker<'cursor, 'tree> {
+    cursor: &'cursor mut TreeCursor<'tree>,
+    queue: VecDeque<Node<'tree>>,
+    root: Node<'tree>,
+}
+
+impl<'tree> Iterator for TreeRecursiveWalker<'_, 'tree> {
+    type Item = Node<'tree>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let current = self.cursor.node();
+
+        if current != self.root && self.cursor.goto_next_sibling() {
+            self.queue.push_back(current);
+            return Some(self.cursor.node());
+        }
+
+        while let Some(queued) = self.queue.pop_front() {
+            self.cursor.cursor.reset(queued);
+
+            if !self.cursor.goto_first_child() {
+                continue;
+            }
+
+            return Some(self.cursor.node());
+        }
+
+        None
     }
 }
