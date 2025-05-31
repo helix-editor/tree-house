@@ -167,7 +167,7 @@ impl<'tree> Iterator for TreeRecursiveWalker<'_, 'tree> {
         }
 
         while let Some(queued) = self.queue.pop_front() {
-            self.cursor.cursor.reset(queued);
+            self.cursor.cursor.reset(&queued);
 
             if !self.cursor.goto_first_child() {
                 continue;

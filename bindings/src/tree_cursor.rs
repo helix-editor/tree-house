@@ -77,7 +77,7 @@ impl<'tree> TreeCursor<'tree> {
         }
     }
 
-    pub fn reset(&mut self, node: Node<'tree>) {
+    pub fn reset(&mut self, node: &Node<'tree>) {
         unsafe { ts_tree_cursor_reset(&mut self.inner, node.as_raw()) }
     }
 
@@ -149,7 +149,7 @@ impl<'tree> Iterator for TreeRecursiveWalker<'tree> {
         }
 
         while let Some(queued) = self.queue.pop_front() {
-            self.cursor.reset(queued);
+            self.cursor.reset(&queued);
 
             if !self.cursor.goto_first_child() {
                 continue;
