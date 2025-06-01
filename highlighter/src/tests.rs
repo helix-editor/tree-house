@@ -500,3 +500,49 @@ fn edit_remove_and_add_injection_layer() {
         .update(before_text.into(), PARSE_TIMEOUT, &[edit], &loader)
         .unwrap();
 }
+
+#[test]
+fn edit_switch_markdown_comment_injection_layer() {
+    let loader = TestLanguageLoader::new();
+    // Before text (one):
+    // ```
+    // //! L
+    // //! - `a`
+    //
+    // struct A {}
+    //
+    // impl A {
+    //     //
+    //     pub fn a() {}
+    // }
+    // ```
+    let one_text = "//! L\n//! - `a`\nstruct A {}\nimpl A {\n//\npub fn a() {}\n}";
+    // After text (two):
+    // ```
+    // //! L
+    // //! - `a`
+    //
+    // struct A {}
+    //
+    // impl A {
+    //     ///
+    //     pub fn a() {}
+    // }
+    // ```
+    let two_text = "//! L\n//! - `a`\nstruct A {}\nimpl A {\n///\npub fn a() {}\n}";
+
+    let edit = InputEdit {
+        start_byte: 39,
+        old_end_byte: 39,
+        new_end_byte: 40,
+        start_point: Point::ZERO,
+        old_end_point: Point::ZERO,
+        new_end_point: Point::ZERO,
+    };
+    let mut syntax =
+        Syntax::new(one_text.into(), loader.get("rust"), PARSE_TIMEOUT, &loader).unwrap();
+    // The test here is that `Syntax::update` can apply the edit `Ok(_)` without panicking.
+    syntax
+        .update(two_text.into(), PARSE_TIMEOUT, &[edit], &loader)
+        .unwrap();
+}
