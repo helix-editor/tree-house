@@ -7,7 +7,7 @@ use arc_swap::ArcSwap;
 use hashbrown::{HashMap, HashSet};
 use once_cell::sync::Lazy;
 use regex_cursor::engines::meta::Regex;
-use ropey::RopeSlice;
+use ropey::{LineType::LF_CR, RopeSlice};
 
 use crate::config::{LanguageConfig, LanguageLoader};
 use crate::highlighter::Highlight;
@@ -210,21 +210,22 @@ impl InjectionsQuery {
             if capture == self.injection_language_capture {
                 let range = matched_node.node.byte_range();
                 marker = Some(InjectionLanguageMarker::Match(
-                    source.byte_slice(range.start as usize..range.end as usize),
+                    source.slice(range.start as usize..range.end as usize),
                 ));
             } else if capture == self.injection_filename_capture {
                 let range = matched_node.node.byte_range();
                 marker = Some(InjectionLanguageMarker::Filename(
-                    source.byte_slice(range.start as usize..range.end as usize),
+                    source.slice(range.start as usize..range.end as usize),
                 ));
             } else if capture == self.injection_shebang_capture {
                 let range = matched_node.node.byte_range();
-                let node_slice = source.byte_slice(range.start as usize..range.end as usize);
+                let node_slice = source.slice(range.start as usize..range.end as usize);
 
                 // some languages allow space and newlines before the actual string content
                 // so a shebang could be on either the first or second line
-                let lines = if let Ok(end) = node_slice.try_line_to_byte(2) {
-                    node_slice.byte_slice(..end)
+                let lines = if node_slice.len_lines(LF_CR) >= 2 {
+                    let end = node_slice.line_to_byte_idx(2, LF_CR);
+                    node_slice.slice(..end)
                 } else {
                     node_slice
                 };
@@ -232,7 +233,7 @@ impl InjectionsQuery {
                 marker = SHEBANG_REGEX
                     .captures_iter(regex_cursor::Input::new(lines))
                     .map(|cap| {
-                        let cap = lines.byte_slice(cap.get_group(1).unwrap().range());
+                        let cap = lines.slice(cap.get_group(1).unwrap().range());
                         InjectionLanguageMarker::Shebang(cap)
                     })
                     .next()

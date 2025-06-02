@@ -215,7 +215,7 @@ impl Syntax {
                 });
             } else if definition_captures.contains_key(&capture) {
                 let text = match source
-                    .byte_slice(range.start as usize..range.end as usize)
+                    .slice(range.start as usize..range.end as usize)
                     .into()
                 {
                     Cow::Borrowed(inner) => KString::from_ref(inner),

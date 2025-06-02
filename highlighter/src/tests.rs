@@ -250,7 +250,8 @@ fn layers() {
 /// ```
 pub fn hello() {}";
 
-    let syntax = Syntax::new(input.into(), loader.get("rust"), PARSE_TIMEOUT, &loader).unwrap();
+    let rope = ropey::Rope::from_str(input);
+    let syntax = Syntax::new(rope.slice(..), loader.get("rust"), PARSE_TIMEOUT, &loader).unwrap();
 
     let assert_injection = |snippet: &str, expected: &[&str]| {
         assert!(!expected.is_empty(), "all layers have at least 1 injection");
@@ -456,8 +457,8 @@ fn edit_remove_and_add_injection_layer() {
     // HTML comment to become the codefence's body.
     // When we reuse the injection for the HTML comments, we need to be sure to re-parse the HTML
     // layer so that it recognizes that the second comment is no longer valid.
-    let before_text = "<!---->\n``\n<!---->";
-    let after_text = "<!---->\n```\n<!---->";
+    let before_text = ropey::Rope::from_str("<!---->\n``\n<!---->");
+    let after_text = ropey::Rope::from_str("<!---->\n```\n<!---->");
     let edit = InputEdit {
         start_byte: 10,
         old_end_byte: 10,
@@ -467,7 +468,7 @@ fn edit_remove_and_add_injection_layer() {
         new_end_point: Point::ZERO,
     };
     let mut syntax = Syntax::new(
-        before_text.into(),
+        before_text.slice(..),
         loader.get("markdown"),
         PARSE_TIMEOUT,
         &loader,
@@ -475,7 +476,7 @@ fn edit_remove_and_add_injection_layer() {
     .unwrap();
     // The test here is that `Syntax::update` can apply the edit `Ok(_)` without panicking.
     syntax
-        .update(after_text.into(), PARSE_TIMEOUT, &[edit], &loader)
+        .update(after_text.slice(..), PARSE_TIMEOUT, &[edit], &loader)
         .unwrap();
 
     // Now test the inverse. Start with the after text and edit it to be the before text. In this
@@ -489,7 +490,7 @@ fn edit_remove_and_add_injection_layer() {
         new_end_point: Point::ZERO,
     };
     let mut syntax = Syntax::new(
-        after_text.into(),
+        after_text.slice(..),
         loader.get("markdown"),
         PARSE_TIMEOUT,
         &loader,
@@ -497,6 +498,6 @@ fn edit_remove_and_add_injection_layer() {
     .unwrap();
     // The test here is that `Syntax::update` can apply the edit `Ok(_)` without panicking.
     syntax
-        .update(before_text.into(), PARSE_TIMEOUT, &[edit], &loader)
+        .update(before_text.slice(..), PARSE_TIMEOUT, &[edit], &loader)
         .unwrap();
 }

@@ -11,10 +11,12 @@ rust-version = "1.76.0"
 
 [features]
 ropey = ["dep:ropey"]
+ropey2 = ["dep:ropey2", "regex-cursor/ropey2"]
 
 [dependencies]
 ropey = { version = "1.6", default-features = false, optional=true }
-regex-cursor = "0.1.5"
+ropey2 = { package = "ropey", version = "2.0.0-alpha.3", features = ["metric_lines_lf_cr", "simd"], optional = true }
+regex-cursor = { git="https://github.com/cessen/regex-cursor.git" , branch="ropey2" }
 libloading = "0.8"
 thiserror = "2.0"
 

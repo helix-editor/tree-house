@@ -5,7 +5,7 @@ use std::iter;
 use ropey::RopeSlice;
 
 use crate::TREE_SITTER_MATCH_LIMIT;
-use tree_sitter::{InactiveQueryCursor, Node, Query, RopeInput};
+use tree_sitter::{InactiveQueryCursor, Node, Query, Ropey2Input};
 
 #[derive(Debug)]
 pub enum CapturedNode<'a> {
@@ -76,7 +76,7 @@ impl TextObjectQuery {
             .find_map(|cap| self.query.get_capture(cap))?;
 
         cursor.set_match_limit(TREE_SITTER_MATCH_LIMIT);
-        let mut cursor = cursor.execute_query(&self.query, &node, RopeInput::new(slice));
+        let mut cursor = cursor.execute_query(&self.query, &node, Ropey2Input::new(slice));
         let capture_node = iter::from_fn(move || {
             let (mat, _) = cursor.next_matched_node()?;
             Some(mat.nodes_for_capture(capture).cloned().collect())

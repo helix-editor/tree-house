@@ -18,7 +18,7 @@ impl Syntax {
         // size limit of 512MiB, TS just cannot handle files this big (too
         // slow). Furthermore, TS uses 32 (signed) bit indices so this limit
         // must never be raised above 2GiB
-        if source.len_bytes() >= 512 * 1024 * 1024 {
+        if source.len() >= 512 * 1024 * 1024 {
             return Err(Error::ExceededMaximumSize);
         }
 

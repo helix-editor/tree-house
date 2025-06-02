@@ -346,14 +346,14 @@ dependencies = [
 [[package]]
 name = "regex-cursor"
 version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0497c781d2f982ae8284d2932aee6a877e58a4541daa5e8fadc18cc75c23a61d"
+source = "git+https://github.com/cessen/regex-cursor.git?branch=ropey2#7b8facc3b184da133f86f7c46de3d18d16708bcc"
 dependencies = [
  "log",
  "memchr",
  "regex-automata",
  "regex-syntax",
- "ropey",
+ "ropey 1.6.1",
+ "ropey 2.0.0-alpha.3",
 ]
 
 [[package]]
@@ -369,6 +369,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93411e420bcd1a75ddd1dc3caf18c23155eda2c090631a85af21ba19e97093b5"
 dependencies = [
  "smallvec",
+ "str_indices",
+]
+
+[[package]]
+name = "ropey"
+version = "2.0.0-alpha.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a6bae11a8c92fe67ffe2817f38315372f113617978665635147fd5eb6b789c4"
+dependencies = [
  "str_indices",
 ]
 
@@ -499,9 +508,9 @@ dependencies = [
 
 [[package]]
 name = "smallvec"
-version = "1.13.2"
+version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c5e1a9a646d36c3599cd173a41282daf47c44583ad367b8e6837255952e5c67"
+checksum = "8917285742e9f3e1683f0a9c4e6b57960b7314d0b08d30d1ecd426713ee2eee9"
 
 [[package]]
 name = "static_assertions"
@@ -573,7 +582,7 @@ dependencies = [
  "pretty_assertions",
  "regex",
  "regex-cursor",
- "ropey",
+ "ropey 2.0.0-alpha.3",
  "skidder",
  "slab",
  "tree-house-bindings",
@@ -587,7 +596,8 @@ dependencies = [
  "cc",
  "libloading",
  "regex-cursor",
- "ropey",
+ "ropey 1.6.1",
+ "ropey 2.0.0-alpha.3",
  "thiserror",
 ]
 

@@ -350,7 +350,7 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
             let text: Cow<str> = self
                 .query
                 .source()
-                .byte_slice(range.start as usize..range.end as usize)
+                .slice(range.start as usize..range.end as usize)
                 .into();
             let Some(definition) = self
                 .query
@@ -428,7 +428,7 @@ impl<'a, T: LanguageLoader> QueryLoader<'a> for HighlightQueryLoader<&'a T> {
             let has_local_reference = mat.matched_nodes().any(|n| {
                 let range = n.node.byte_range();
                 let text: Cow<str> = source
-                    .byte_slice(range.start as usize..range.end as usize)
+                    .slice(range.start as usize..range.end as usize)
                     .into();
                 locals_cursor
                     .locals

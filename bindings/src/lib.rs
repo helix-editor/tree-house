@@ -11,6 +11,11 @@ mod ropey;
 #[cfg(feature = "ropey")]
 pub use ropey::RopeInput;
 
+#[cfg(feature = "ropey2")]
+mod ropey2;
+#[cfg(feature = "ropey2")]
+pub use ropey2::RopeInput as Ropey2Input;
+
 use std::ops;
 
 pub use grammar::{Grammar, IncompatibleGrammarError};
