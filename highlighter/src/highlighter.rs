@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::cmp;
 use std::fmt;
 use std::mem::replace;
 use std::num::NonZeroU32;
@@ -9,7 +10,7 @@ use std::sync::Arc;
 use crate::config::{LanguageConfig, LanguageLoader};
 use crate::locals::ScopeCursor;
 use crate::query_iter::{MatchedNode, QueryIter, QueryIterEvent, QueryLoader};
-use crate::{Injection, Language, Layer, Syntax};
+use crate::{Injection, Language, Layer, Range, Syntax};
 use arc_swap::ArcSwap;
 use hashbrown::{HashMap, HashSet};
 use ropey::RopeSlice;
@@ -147,7 +148,7 @@ impl fmt::Debug for Highlight {
 
 #[derive(Debug)]
 struct HighlightedNode {
-    end: u32,
+    range: Range,
     highlight: Highlight,
 }
 
@@ -243,8 +244,20 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
         let prev_stack_size = self.active_highlights.len();
 
         let pos = self.next_event_offset();
+        eprintln!(
+            "\x1b[33m::advance\x1b[0m at \x1b[34m({}, {})\x1b[0m",
+            self.next_highlight_start, self.next_highlight_end
+        );
         if self.next_highlight_end == pos {
+            eprintln!(
+                "\x1b[33m::advance\x1b[0m processing highlight end at \x1b[34m{pos}\x1b[0m ({:?})",
+                self.active_highlights,
+            );
             self.process_highlight_end(pos);
+            eprintln!(
+                "\x1b[33m::advance\x1b[0m processed highlight end at \x1b[34m{pos}\x1b[0m ({:?})",
+                self.active_highlights,
+            );
             refresh = true;
         }
 
@@ -273,7 +286,11 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
         self.next_highlight_end = self
             .active_highlights
             .last()
-            .map_or(u32::MAX, |node| node.end);
+            .map_or(u32::MAX, |node| node.range.end);
+        eprintln!(
+            "\x1b[33m::advance\x1b[0m to \x1b[34m({}, {})\x1b[0m ({:?})",
+            self.next_highlight_start, self.next_highlight_end, self.active_highlights,
+        );
 
         if refresh {
             (
@@ -299,6 +316,10 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
             .next_query_event
             .as_ref()
             .map_or(u32::MAX, |event| event.start_byte());
+        eprintln!(
+            "\x1b[32madvanced query iter to \x1b[34m({}, {})\x1b[32m\n\tnext event {:?}\n\tcurrent event: {event:?}\x1b[0m",
+            self.next_highlight_start, self.next_highlight_end, self.next_query_event
+        );
         event
     }
 
@@ -306,7 +327,7 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
         let i = self
             .active_highlights
             .iter()
-            .rposition(|highlight| highlight.end != pos)
+            .rposition(|highlight| highlight.range.end != pos)
             .map_or(0, |i| i + 1);
         self.active_highlights.truncate(i);
     }
@@ -374,21 +395,84 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
 
         // If multiple patterns match this exact node, prefer the last one which matched.
         // This matches the precedence of Neovim, Zed, and tree-sitter-cli.
-        if !*first_highlight
-            && self
+        if !*first_highlight {
+            let insert_position = self
                 .active_highlights
-                .last()
-                .is_some_and(|prev_node| prev_node.end == range.end)
-        {
-            self.active_highlights.pop();
-        }
-        if let Some(highlight) = highlight {
-            self.active_highlights.push(HighlightedNode {
-                end: range.end,
-                highlight,
-            });
+                .iter()
+                .rev()
+                .take_while(|h| h.range.start == range.start)
+                .position(|h| h.range.end <= range.end)
+                .map(|pos| self.active_highlights.len() - pos - 1);
+            let ip = self
+                .active_highlights
+                .iter()
+                .rposition(|h| h.range.end <= range.end);
+            debug_assert_eq!(insert_position, ip);
+            if let Some(idx) = ip {
+                // Idx is the position of 9..10 here
+                match self.active_highlights[idx].range.end.cmp(&range.end) {
+                    cmp::Ordering::Equal => {
+                        if let Some(highlight) = highlight {
+                            let h = HighlightedNode { range, highlight };
+                            eprintln!(
+                                "\x1b[31mswapped {:?} to {h:?}\x1b[0m",
+                                self.active_highlights[idx]
+                            );
+                            self.active_highlights[idx] = h;
+                        } else {
+                            eprintln!("\x1b[31mdropped {:?}\x1b[0m", self.active_highlights[idx]);
+                            self.active_highlights.remove(idx);
+                        }
+                    }
+                    // Captures are emitted in the order that they are finished. Insert any
+                    // highlights which start at the same position into the active highlights so
+                    // that the ordering invariant remains satisfied.
+                    cmp::Ordering::Less => {
+                        if let Some(highlight) = highlight {
+                            let h = HighlightedNode { range, highlight };
+                            eprintln!("\x1b[31minserted {h:?} at {idx}\x1b[0m",);
+                            self.active_highlights.insert(idx, h)
+                        }
+                    }
+                    // By definition of our `rposition` predicate:
+                    cmp::Ordering::Greater => unreachable!(),
+                }
+            } else if let Some(highlight) = highlight {
+                let h = HighlightedNode { range, highlight };
+                eprintln!(
+                    "pushing highlight based on node {:?} ({first_highlight:?}): {h:?} to {:?}",
+                    node.node, self.active_highlights,
+                );
+                self.active_highlights.push(h);
+            }
+        } else if let Some(highlight) = highlight {
+            let h = HighlightedNode { range, highlight };
+            eprintln!(
+                "pushing highlight based on node {:?} ({first_highlight:?}): {h:?} to {:?}",
+                node.node, self.active_highlights,
+            );
+            self.active_highlights.push(h);
             *first_highlight = false;
         }
+
+        // `active_highlights` must be a stack of highlight events the highlights stack on the
+        // prior highlights in the Vec. Each highlight's range must be a subset of the highlight's
+        // range before it.
+        debug_assert!(
+            {
+                let layer_start = self
+                    .layer_states
+                    .get(&self.current_layer)
+                    .map(|layer| layer.parent_highlights)
+                    .unwrap_or_default();
+                self.active_highlights[layer_start..].is_sorted_by(|a, b| {
+                    a.range.start <= b.range.start && a.range.end >= b.range.end
+                })
+            },
+            "unsorted highlights on layer {:?}: {:?}",
+            self.current_layer,
+            self.active_highlights,
+        );
     }
 }
 

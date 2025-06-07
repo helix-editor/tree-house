@@ -206,26 +206,29 @@ pub fn highlighter_fixture(
             wln!(res, "{ident}{line}")
         }
     }
-    let mut errors = String::new();
     while pos < end as u32 {
         let (event, new_highlights) = highlighter.advance();
         if event == HighlightEvent::Refresh {
             highlight_stack.clear();
         }
         highlight_stack.extend(new_highlights.map(&get_highlight_name));
-        let mut start = pos;
+        let start = pos;
         pos = highlighter.next_event_offset();
         if pos == u32::MAX {
             pos = src.len_bytes() as u32
         }
         if pos <= start {
-            wln!(
-                errors,
-                "INVALID HIGHLIGHT RANGE: {start}..{pos} {:?} {:?}",
+            panic!(
+                "INVALID HIGHLIGHT RANGE: {start}..{pos} '{}' {:?}",
                 src.byte_slice(pos as usize..start as usize),
                 highlight_stack
             );
-            start = pos;
+        } else {
+            eprintln!(
+                "highlight {start}..{pos} '{}' with {:?}",
+                src.byte_slice(start as usize..pos as usize),
+                highlight_stack
+            );
         }
 
         while start >= line_end {
