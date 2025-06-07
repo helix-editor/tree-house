@@ -26,9 +26,10 @@ macro_rules! wln {
 
 pub fn check_fixture(path: impl AsRef<Path>, roundtrip: impl FnOnce(&str) -> String) {
     let path = path.as_ref();
-    let snapshot = fs::read_to_string(path)
-        .unwrap_or_default()
-        .replace("\r\n", "\n");
+    let snapshot = match fs::read_to_string(path) {
+        Ok(content) => content.replace("\r\n", "\n"),
+        Err(err) => panic!("Failed to read fixture {path:?}: {err}"),
+    };
     let snapshot = snapshot.trim_end();
     let roundtrip = roundtrip(snapshot);
     if snapshot != roundtrip.trim_end() {
