@@ -123,8 +123,6 @@ impl TestLanguageLoader {
         self.lang_config[lang.idx()] = OnceCell::new();
     }
 
-    // TODO: remove on first use.
-    #[allow(dead_code)]
     fn overwrite_highlights(&mut self, lang: &str, content: String) {
         let lang = self.get(lang);
         self.overwrites[lang.idx()].highlights = Some(content);
@@ -144,8 +142,6 @@ impl TestLanguageLoader {
         self.lang_config[lang.idx()] = OnceCell::new();
     }
 
-    // TODO: remove on first use.
-    #[allow(dead_code)]
     fn shadow_highlights(&mut self, lang: &str, content: &str) {
         let lang = self.get(lang);
         let skidder_config = skidder_config();
@@ -195,9 +191,10 @@ fn lang_for_path(path: &Path, loader: &TestLanguageLoader) -> Language {
     {
         "rs" => loader.get("rust"),
         "html" => loader.get("html"),
+        "css" => loader.get("css"),
         "erl" => loader.get("erlang"),
         "md" => loader.get("markdown"),
-        extension => unreachable!("unknown file type .{extension}"),
+        extension => panic!("unknown file type .{extension}"),
     }
 }
 
@@ -499,4 +496,37 @@ fn edit_remove_and_add_injection_layer() {
     syntax
         .update(before_text.into(), PARSE_TIMEOUT, &[edit], &loader)
         .unwrap();
+}
+
+#[test]
+fn css_parent_child_highlight_precedence() {
+    let mut loader = TestLanguageLoader::new();
+    // NOTE: the pattern being tested here `((color_value) "#") @string.special` is odd and should
+    // be rewritten to `(color_value "#" @string.special)` - that was probably the original intent
+    // of the pattern. We overwrite the highlights to take the parts we need for this case so that
+    // if/when we fix that pattern in the future it does not break this test case.
+    loader.overwrite_highlights(
+        "css",
+        r##"
+((property_name) @variable
+ (#match? @variable "^--"))
+
+"#" @punctuation
+((color_value) "#") @string.special
+(color_value) @string.special
+
+[";" ":"] @punctuation.delimiter
+"##
+        .to_string(),
+    );
+
+    // In this case two patterns fight over the `#` character and both should actually highlight
+    // it. Because of the odd way that the pattern `((color_value) "#") @string.special` is
+    // written, the QueryIter yields the captures in the opposite order it would normally:
+    // first the child pattern `{Node # 9..10}` and then `{Node color_value 9..13}`.
+    //
+    // This case checks the invariant that "`active_highlights` ends are sorted descending" is
+    // preserved.
+    highlight_fixture(&loader, "highlighter/parent_child_highlight_precedence.css");
+}
 }
