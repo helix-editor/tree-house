@@ -529,4 +529,12 @@ fn css_parent_child_highlight_precedence() {
     // preserved.
     highlight_fixture(&loader, "highlighter/parent_child_highlight_precedence.css");
 }
+
+#[test]
+fn markdown_bold_highlight() {
+    let loader = TestLanguageLoader::new();
+    // This is a very simple case to check that adjacent equivalent highlights are merged
+    // properly: the `punctuation.bracket` highlight on the consecutive `*`s should be combined
+    // into one span.
+    highlight_fixture(&loader, "highlighter/markdown_bold.md");
 }
