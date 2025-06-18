@@ -112,6 +112,15 @@ impl<'tree> Node<'tree> {
         unsafe { ts_node_is_missing(self.as_raw()) }
     }
 
+    /// Check if this node is *extra*.
+    ///
+    /// Extra nodes represent things like comments, which are not required by the
+    /// grammar, but can appear anywhere.
+    #[inline]
+    pub fn is_extra(&self) -> bool {
+        unsafe { ts_node_is_extra(self.as_raw()) }
+    }
+
     /// Get the byte offsets where this node starts.
     #[inline(always)]
     pub fn start_byte(&self) -> u32 {
@@ -284,6 +293,12 @@ extern "C" {
     /// Check if the node is *missing*. Missing nodes are inserted by the parser
     /// in order to recover from certain kinds of syntax errors
     fn ts_node_is_missing(node: NodeRaw) -> bool;
+
+    /// Check if this node is *extra*.
+    ///
+    /// Extra nodes represent things like comments, which are not required by the
+    /// grammar, but can appear anywhere.
+    fn ts_node_is_extra(node: NodeRaw) -> bool;
 
     /// Get the node's immediate parent
     fn ts_node_parent(node: NodeRaw) -> NodeRaw;
