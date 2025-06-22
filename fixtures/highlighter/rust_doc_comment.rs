@@ -6,6 +6,29 @@
 // │ │╰─ comment
 // │ ╰─ comment comment
 // ╰─ comment
+   ///
+// ┡┛╿╰─ comment
+// │ ╰─ comment comment
+// ╰─ comment
+   /// ```
+// ┡┛╿┡━━┛╰─ comment markup.raw.block
+// │ │╰─ comment markup.raw.block punctuation.bracket
+// │ ╰─ comment comment
+// ╰─ comment
+   /// fn foo()
+// ┡┛╿╿┡┛╿┡━┛┡┛╰─ comment markup.raw.block
+// │ │││ ││  ╰─ comment markup.raw.block punctuation.bracket
+// │ │││ │╰─ comment markup.raw.block function
+// │ │││ ╰─ comment markup.raw.block
+// │ ││╰─ comment markup.raw.block keyword.function
+// │ │╰─ comment markup.raw.block
+// │ ╰─ comment comment
+// ╰─ comment
+   /// ```
+// ┡┛╿┡━━┛╰─ comment markup.raw.block
+// │ │╰─ comment markup.raw.block punctuation.bracket
+// │ ╰─ comment comment
+// ╰─ comment
    /// **foo
 // ┡┛╿╿┡┛┗━┹─ comment markup.bold
 // │ ││╰─ comment markup.bold punctuation.bracket

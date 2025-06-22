@@ -217,17 +217,39 @@ impl Query {
 
                 "any-of?" | "not-any-of?" => {
                     predicate.check_min_arg_count(1)?;
-                    let capture = predicate.capture_arg(0)?;
                     let negated = predicate.name() == "not-any-of?";
-                    let values: Result<_, InvalidPredicateError> = (1..predicate.num_args())
-                        .map(|i| predicate.query_str_arg(i))
-                        .collect();
-                    self.text_predicates.push(TextPredicate {
-                        capture,
-                        kind: TextPredicateKind::AnyString(values?),
-                        negated,
-                        match_all: false,
-                    });
+                    let args = 1..predicate.num_args();
+
+                    match predicate.capture_arg(0) {
+                        Ok(capture) => {
+                            let args = args.map(|i| predicate.query_str_arg(i));
+                            let values: Result<_, InvalidPredicateError> = args.collect();
+
+                            self.text_predicates.push(TextPredicate {
+                                capture,
+                                kind: TextPredicateKind::AnyString(values?),
+                                negated,
+                                match_all: false,
+                            });
+                        }
+                        Err(missing_capture_err) => {
+                            let Ok(value) = predicate.str_arg(0) else {
+                                return Err(missing_capture_err);
+                            };
+                            let values = args
+                                .map(|i| predicate.str_arg(i))
+                                .collect::<Result<Vec<_>, _>>()?;
+
+                            custom_predicate(
+                                pattern,
+                                UserPredicate::IsAnyOf {
+                                    negated,
+                                    value,
+                                    values,
+                                },
+                            )?
+                        }
+                    }
                 }
 
                 // is and is-not are better handled as custom predicates since interpreting is context dependent
@@ -369,6 +391,7 @@ impl InvalidPredicateError {
             UserPredicate::SetProperty { key, .. } => Self::UnknownProperty {
                 property: key.into(),
             },
+            UserPredicate::IsAnyOf { value, .. } => Self::UnknownPredicate { name: value.into() },
             UserPredicate::Other(predicate) => Self::UnknownPredicate {
                 name: predicate.name().into(),
             },

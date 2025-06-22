@@ -89,6 +89,9 @@ pub struct InjectionsQuery {
     injection_language_capture: Option<Capture>,
     injection_filename_capture: Option<Capture>,
     injection_shebang_capture: Option<Capture>,
+    /// 1. The list of matches to compare the parent layer's language
+    /// 1. Whether it is negated: `#any-of` or `#not-any-of?`
+    injection_parent_layer_langs_predicate: Option<(Vec<String>, bool)>,
     // Note that the injections query is concatenated with the locals query.
     pub(crate) local_query: Query,
     // TODO: Use a Vec<bool> instead?
@@ -108,6 +111,8 @@ impl InjectionsQuery {
         query_source.push_str(injection_query_text);
         query_source.push_str(local_query_text);
 
+        let mut injection_parent_layer_langs_predicate = None;
+
         let mut injection_properties: HashMap<Pattern, InjectionProperties> = HashMap::new();
         let mut not_scope_inherits = HashSet::new();
         let injection_query = Query::new(grammar, injection_query_text, |pattern, predicate| {
@@ -121,6 +126,16 @@ impl InjectionsQuery {
                         .entry(pattern)
                         .or_default()
                         .include_children = IncludedChildren::Unnamed
+                }
+                // Allow filtering for specific languages in
+                // `#set! injection.languae injection.parent-layer`
+                UserPredicate::IsAnyOf {
+                    negated,
+                    value: INJECTION_PARENT_LAYER,
+                    values,
+                } => {
+                    injection_parent_layer_langs_predicate =
+                        Some((values.into_iter().map(ToOwned::to_owned).collect(), negated));
                 }
                 UserPredicate::SetProperty {
                     key: "injection.include-children",
@@ -167,6 +182,7 @@ impl InjectionsQuery {
         local_query.disable_capture("local.reference");
 
         Ok(InjectionsQuery {
+            injection_parent_layer_langs_predicate,
             injection_properties,
             injection_content_capture: injection_query.get_capture("injection.content"),
             injection_language_capture: injection_query.get_capture("injection.language"),
@@ -195,6 +211,7 @@ impl InjectionsQuery {
 
     fn process_match<'a, 'tree>(
         &self,
+        injection_parent_language: Language,
         query_match: &QueryMatch<'a, 'tree>,
         node_idx: MatchedNodeIdx,
         source: RopeSlice<'a>,
@@ -242,11 +259,41 @@ impl InjectionsQuery {
                 last_content_node = i as u32;
             }
         }
-        let marker = marker.or(properties
-            .and_then(|p| p.language.as_deref())
-            .map(InjectionLanguageMarker::Name))?;
 
-        let language = loader.language_for_marker(marker)?;
+        let language = marker
+            .and_then(|m| loader.language_for_marker(m))
+            .or_else(|| {
+                properties
+                    .and_then(|p| p.language.as_deref())
+                    .and_then(|name| {
+                        let matches_predicate = || {
+                            self.injection_parent_layer_langs_predicate
+                                .as_ref()
+                                .is_none_or(|(predicate, is_negated)| {
+                                    predicate.iter().any(|capture| {
+                                        let Some(marker) = loader.language_for_marker(
+                                            InjectionLanguageMarker::Name(capture),
+                                        ) else {
+                                            return false;
+                                        };
+
+                                        if *is_negated {
+                                            marker != injection_parent_language
+                                        } else {
+                                            marker == injection_parent_language
+                                        }
+                                    })
+                                })
+                        };
+
+                        if name == INJECTION_PARENT_LAYER && matches_predicate() {
+                            Some(injection_parent_language)
+                        } else {
+                            loader.language_for_marker(InjectionLanguageMarker::Name(name))
+                        }
+                    })
+            })?;
+
         let scope = if properties.is_some_and(|p| p.combined) {
             Some(InjectionScope::Pattern {
                 pattern: query_match.pattern(),
@@ -286,6 +333,7 @@ impl InjectionsQuery {
     /// This case should be handled by the calling function
     fn execute<'a>(
         &'a self,
+        injection_parent_language: Language,
         node: &Node<'a>,
         source: RopeSlice<'a>,
         loader: &'a impl LanguageLoader,
@@ -298,7 +346,14 @@ impl InjectionsQuery {
             if query_match.matched_node(node_idx).capture != injection_content_capture {
                 continue;
             }
-            let Some(mat) = self.process_match(&query_match, node_idx, source, loader) else {
+
+            let Some(mat) = self.process_match(
+                injection_parent_language,
+                &query_match,
+                node_idx,
+                source,
+                loader,
+            ) else {
                 query_match.remove();
                 continue;
             };
@@ -384,7 +439,18 @@ impl Syntax {
         let mut injections: Vec<Injection> = Vec::with_capacity(layer_data.injections.len());
         let mut old_injections = take(&mut layer_data.injections).into_iter().peekable();
 
-        let injection_query = injections_query.execute(&parse_tree.root_node(), source, loader);
+        // The language to inject if `(#set! injection.language injection.parent-layer)` is set
+        let injection_parent_language = layer_data.parent.map_or_else(
+            || self.layer(self.root).language,
+            |layer| self.layer(layer).language,
+        );
+
+        let injection_query = injections_query.execute(
+            injection_parent_language,
+            &parse_tree.root_node(),
+            source,
+            loader,
+        );
 
         let mut combined_injections: HashMap<InjectionScope, Layer> = HashMap::with_capacity(32);
         for mat in injection_query {
@@ -713,3 +779,62 @@ fn ranges_intersect(a: &Range, b: &Range) -> bool {
     // Adapted from <https://github.com/helix-editor/helix/blob/8df58b2e1779dcf0046fb51ae1893c1eebf01e7c/helix-core/src/selection.rs#L156-L163>
     a.start == b.start || (a.end > b.start && b.end > a.start)
 }
+
+/// When the language is injected, this value will be set to the
+/// language of the parent layer.
+///
+/// This is useful e.g. when injecting markdown into documentation
+/// comments for a language such as Rust, and we want the default
+/// code block without any info string to be the same as the parent layer.
+///
+/// In the next two examples, the language injected into the inner
+/// code block in the documentation comments will be the same as the parent
+/// layer
+///
+/// ````gleam
+/// /// This code block will have the "gleam" language when
+/// /// no info string is supplied:
+/// ///
+/// /// ```
+/// /// let foo: Int = example()
+/// /// ```
+/// fn example() -> Int { todo }
+/// ````
+///
+/// ````rust
+/// /// This code block will have the "rust" language when
+/// /// no info string is supplied:
+/// ///
+/// /// ```
+/// /// let foo: i32 = example();
+/// /// ```
+/// fn example() -> i32 { todo!() }
+/// ````
+///
+/// In the above example, we have two layers:
+///
+/// ```text
+///  <--     rust     -->
+///    <-- markdown -->
+/// ```
+///
+/// In the `markdown` layer, by default there will be no injection for a
+/// code block with no `(info_string)` node.
+///
+/// By using `injection.parent-layer`, when markdown is injected into a
+/// language the code block's default value will be the parent layer.
+///
+/// # Example
+///
+/// The following injection will have the effect described above for the
+/// specified languages `gleam` and `rust`. All other languages are treated
+/// normally.
+///
+/// ```scheme
+/// (fenced_code_block
+///   (code_fence_content) @injection.content
+///   (#set! injection.include-unnamed-children)
+///   (#set! injection.language injection.parent-layer)
+///   (#any-of? injection.parent-layer "gleam" "rust"))
+/// ```
+const INJECTION_PARENT_LAYER: &str = "injection.parent-layer";
