@@ -5,6 +5,15 @@
   (#set! injection.include-unnamed-children))
 
 (fenced_code_block
+  (fenced_code_block_delimiter)
+  (block_continuation)
+  (code_fence_content) @injection.content
+  (fenced_code_block_delimiter)
+  (#set! injection.language injection.parent-layer)
+  (#set! injection.include-unnamed-children)
+  (#any-of? injection.parent-layer "rust"))
+
+(fenced_code_block
   (info_string
     (language) @injection.language)
   (code_fence_content) @injection.content (#set! injection.include-unnamed-children))

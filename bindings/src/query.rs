@@ -17,6 +17,30 @@ pub enum UserPredicate<'a> {
         key: &'a str,
         val: Option<&'a str>,
     },
+    /// A custom `#any-of? <value> [...<values>]` predicate where
+    /// `<value>` is any string and `[...<values>]` is a list of values for
+    /// which the predicate succeeds if `<value>` is in the list.
+    ///
+    /// # Example
+    ///
+    /// Field values in the following example:
+    /// - `negated`: `false`
+    /// - `value`: `"injection.parent-layer"`
+    /// - `values`: `["gleam", "zig"]`
+    ///
+    /// ```scheme
+    /// (#any-of? injection.parent-layer "gleam" "zig")
+    /// ```
+    IsAnyOf {
+        /// - If `false`, will be `any-of?`. Will match *if* `values` includes `value`
+        /// - If `true`, will be `not-any-of?`. Will match *unless* `values` includes `value`
+        negated: bool,
+        /// What we are trying to find. E.g. in `#any-of? hello-world` this will be
+        /// `"hello-world"`. We will try to find this value in `values`
+        value: &'a str,
+        /// List of valid (or invalid, if `negated`) values for `value`
+        values: Vec<&'a str>,
+    },
     SetProperty {
         key: &'a str,
         val: Option<&'a str>,
@@ -27,6 +51,26 @@ pub enum UserPredicate<'a> {
 impl Display for UserPredicate<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
+            UserPredicate::IsAnyOf {
+                negated,
+                value,
+                ref values,
+            } => {
+                let values_len = values.len();
+                write!(
+                    f,
+                    "(#{not}any-of? {value} {values})",
+                    not = if negated { "not-" } else { "" },
+                    values = values
+                        .iter()
+                        .enumerate()
+                        .fold(String::new(), |s, (i, value)| {
+                            let comma = if i + 1 == values_len { "" } else { ", " };
+
+                            format!("{s}\"{value}\"{comma}")
+                        }),
+                )
+            }
             UserPredicate::IsPropertySet { negate, key, val } => {
                 let predicate = if negate { "is-not?" } else { "is?" };
                 let spacer = if val.is_some() { " " } else { "" };
