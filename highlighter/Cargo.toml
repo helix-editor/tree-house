@@ -28,7 +28,6 @@ pretty_assertions = { version = "1.4.0", optional = true }
 kstring = "2.0"
 
 [dev-dependencies]
-cov-mark = "2.0.0"
 indexmap = "2.5.0"
 skidder = { path = "../skidder" }
 
