@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 
 use libloading::{Library, Symbol};
+#[cfg(feature = "tree-sitter-language")]
+use tree_sitter_language::LanguageFn;
 
 /// Lowest supported ABI version of a grammar.
 // WARNING: update when updating vendored c sources
@@ -44,18 +46,21 @@ impl Grammar {
             })?
         };
         let language_fn_name = format!("tree_sitter_{}", name.replace('-', "_"));
-        let grammar = unsafe {
-            let language_fn: Symbol<unsafe extern "C" fn() -> NonNull<GrammarData>> = library
-                .get(language_fn_name.as_bytes())
-                .map_err(|err| Error::DlSym {
-                    err,
-                    symbol: name.to_owned(),
-                })?;
-            Grammar { ptr: language_fn() }
-        };
+        let language_fn: Symbol<unsafe extern "C" fn() -> NonNull<GrammarData>> = library
+            .get(language_fn_name.as_bytes())
+            .map_err(|err| Error::DlSym {
+                err,
+                symbol: name.to_owned(),
+            })?;
+        let grammar = Grammar::from_grammar_data(language_fn())?;
+        std::mem::forget(library);
+        Ok(grammar)
+    }
+
+    fn from_grammar_data(ptr: NonNull<GrammarData>) -> Result<Grammar, Error> {
+        let grammar = Grammar { ptr };
         let version = grammar.abi_version();
         if (MIN_COMPATIBLE_ABI_VERSION..=ABI_VERSION).contains(&version) {
-            std::mem::forget(library);
             Ok(grammar)
         } else {
             Err(Error::IncompatibleVersion { version })
@@ -69,6 +74,16 @@ impl Grammar {
     pub fn node_kind_is_visible(self, kind_id: u16) -> bool {
         let symbol_type = unsafe { ts_language_symbol_type(self, kind_id) };
         symbol_type <= (SymbolType::Anonymous as u32)
+    }
+}
+
+#[cfg(feature = "tree-sitter-language")]
+impl TryFrom<LanguageFn> for Grammar {
+    type Error = Error;
+
+    fn try_from(builder: LanguageFn) -> Result<Self, Self::Error> {
+        let ptr = unsafe { NonNull::new_unchecked(builder.into_raw()().cast_mut().cast()) };
+        Self::from_grammar_data(ptr)
     }
 }
 
