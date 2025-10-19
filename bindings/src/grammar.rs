@@ -89,13 +89,13 @@ impl TryFrom<LanguageFn> for Grammar {
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[error("Error opening dynamic library {path:?}")]
+    #[error("Error opening dynamic library {path:?}: {err}")]
     DlOpen {
         #[source]
         err: libloading::Error,
         path: PathBuf,
     },
-    #[error("Failed to load symbol {symbol}")]
+    #[error("Failed to load symbol {symbol}: {err}")]
     DlSym {
         #[source]
         err: libloading::Error,
