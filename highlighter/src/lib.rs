@@ -27,6 +27,7 @@ mod tests;
 pub mod fixtures;
 pub mod locals;
 pub mod query_iter;
+pub mod tags;
 pub mod text_object;
 mod tree_cursor;
 
