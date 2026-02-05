@@ -236,40 +236,40 @@
 
 #    include <endian.h>
 
-#    define __BYTE_ORDER BYTE_ORDER
-#    define __LITTLE_ENDIAN LITTLE_ENDIAN
-#    define __BIG_ENDIAN BIG_ENDIAN
+// #    define __BYTE_ORDER BYTE_ORDER
+// #    define __LITTLE_ENDIAN LITTLE_ENDIAN
+// #    define __BIG_ENDIAN BIG_ENDIAN
 
 
-inline uint16_t htobe16(uint16_t x) {
-#if __BYTE_ORDER == __LITTLE_ENDIAN
-    return __builtin_bswap16(x);
-#else
-    return x;
-#endif
-}
+// inline uint16_t htobe16(uint16_t x) {
+// #if __BYTE_ORDER == __LITTLE_ENDIAN
+//     return __builtin_bswap16(x);
+// #else
+//     return x;
+// #endif
+// }
 
-inline uint16_t be16toh(uint16_t x) { return htobe16(x); }
+// inline uint16_t be16toh(uint16_t x) { return htobe16(x); }
 
-inline __uint32_t htobe32(uint32_t x) {
-#if __BYTE_ORDER == __LITTLE_ENDIAN
-    return __builtin_bswap32(x);
-#else
-    return x;
-#endif
-}
+// inline __uint32_t htobe32(uint32_t x) {
+// #if __BYTE_ORDER == __LITTLE_ENDIAN
+//     return __builtin_bswap32(x);
+// #else
+//     return x;
+// #endif
+// }
 
-inline uint32_t be32toh(uint32_t x) { return htobe32(x); }
+// inline uint32_t be32toh(uint32_t x) { return htobe32(x); }
 
-inline __uint64_t htobe64(uint64_t x) {
-#if __BYTE_ORDER == __LITTLE_ENDIAN
-    return __builtin_bswap64(x);
-#else
-    return x;
-#endif
-}
+// inline __uint64_t htobe64(uint64_t x) {
+// #if __BYTE_ORDER == __LITTLE_ENDIAN
+//     return __builtin_bswap64(x);
+// #else
+//     return x;
+// #endif
+// }
 
-inline uint64_t be64toh(uint64_t x) { return htobe64(x); }
+// inline uint64_t be64toh(uint64_t x) { return htobe64(x); }
 
 #else
 
