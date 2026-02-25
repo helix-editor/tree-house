@@ -170,6 +170,10 @@ impl Syntax {
             .descendant_for_byte_range(start, end)
     }
 
+    pub fn layers(&self) -> impl Iterator<Item = Layer> + '_ {
+        self.layers.iter().map(|(i, _)| Layer(i as u32))
+    }
+
     /// Finds the smallest injection layer that fully includes the range `start..=end`.
     pub fn layer_for_byte_range(&self, start: u32, end: u32) -> Layer {
         self.layers_for_byte_range(start, end)
