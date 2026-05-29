@@ -200,7 +200,7 @@ impl Syntax {
         }))
     }
 
-    pub fn walk(&self) -> TreeCursor {
+    pub fn walk(&self) -> TreeCursor<'_> {
         TreeCursor::new(self)
     }
 }
