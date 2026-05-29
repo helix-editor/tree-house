@@ -11,6 +11,7 @@ use tree_sitter::{IncompatibleGrammarError, Node, Tree};
 pub use crate::config::{read_query, LanguageConfig, LanguageLoader};
 pub use crate::injections_query::{InjectionLanguageMarker, InjectionsQuery};
 use crate::parse::LayerUpdateFlags;
+pub use crate::query_iter::{CapturedMatch, QueryMatchIter, QueryMatchIterEvent};
 pub use crate::tree_cursor::TreeCursor;
 pub use tree_sitter;
 // pub use pretty_print::pretty_print_tree;
