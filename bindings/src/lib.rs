@@ -15,7 +15,7 @@ use std::ops;
 
 pub use grammar::{Grammar, IncompatibleGrammarError};
 pub use node::Node;
-pub use parser::{Parser, ParserInputRaw};
+pub use parser::{ParseOptions, ParseState, Parser, ParserInputRaw};
 pub use query::{Capture, Pattern, Query, QueryStr};
 pub use query_cursor::{InactiveQueryCursor, MatchedNode, MatchedNodeIdx, QueryCursor, QueryMatch};
 pub use tree::{InputEdit, Tree};
