@@ -12,7 +12,7 @@ use tree_sitter::{Grammar, InputEdit, Point};
 
 use crate::config::{LanguageConfig, LanguageLoader};
 use crate::fixtures::{check_highlighter_fixture, check_injection_fixture};
-use crate::highlighter::{Highlight, Highlighter};
+use crate::highlighter::{Highlight, HighlightEvent, Highlighter};
 use crate::injections_query::InjectionLanguageMarker;
 use crate::{Language, Layer, Syntax};
 
@@ -675,4 +675,57 @@ fn highlighter_no_panic_overlapping_captures_missing_theme() {
     while highlighter.next_event_offset() != u32::MAX {
         highlighter.advance();
     }
+}
+
+#[test]
+fn highlighter_ancestor_highlight_not_replaced_by_child_capture() {
+    // Regression test for the sibling bug in start_highlight: when the sequence of
+    // captures for a child node is Some/None/Some, and the child shares an end
+    // byte with an ancestor highlight from a prior advance() call, the old code
+    // would find the ancestor via rposition and replace it with the last Some capture.
+    // The ancestor's highlight would silently vanish from active_highlights, and the
+    // Push event for the child would be empty.
+    //
+    // The fix scopes the rposition search to highlights added in the current advance()
+    // call only. The ancestor is invisible to the search, so the last Some capture is
+    // pushed as a new entry alongside the ancestor.
+    let mut loader = TestLanguageLoader::new();
+    loader.overwrite_highlights(
+        "python",
+        r#"
+(decorator) @function
+(attribute attribute: (identifier) @variable.other.member)
+((identifier) @type     (#match? @type     "^[A-Z]"))
+((identifier) @constant (#match? @constant "^[A-Z]"))
+"#
+        .to_string(),
+    );
+    // For `B` in `@a.B`:
+    //   @variable.other.member: Some (push)
+    //   @type:                  None (remove, not in theme)
+    //   @constant:              Some (old: replaces ancestor @function; new: pushes alongside)
+    loader.set_highlight_filter(["function", "variable.other.member", "constant"]);
+
+    let source = "@a.B";
+    let syntax = Syntax::new(source.into(), loader.get("python"), PARSE_TIMEOUT, &loader)
+        .expect("parse should succeed");
+    let mut highlighter = Highlighter::new(&syntax, source.into(), &loader, 0..);
+
+    // Advance past events before `B` (offset 3).
+    let offset_of_b = source.find('B').unwrap() as u32;
+    while highlighter.next_event_offset() < offset_of_b {
+        highlighter.advance();
+    }
+    assert_eq!(highlighter.next_event_offset(), offset_of_b);
+
+    let (event, pushed) = highlighter.advance();
+    assert_eq!(event, HighlightEvent::Push);
+    // The @constant highlight should be pushed as a new entry.
+    assert_eq!(pushed.len(), 1, "expected exactly one new highlight pushed for `B`");
+    // The ancestor @function highlight must still be present — it was not replaced.
+    assert_eq!(
+        highlighter.active_highlights().len(),
+        2,
+        "both the decorator's @function and `B`'s @constant should be active"
+    );
 }
