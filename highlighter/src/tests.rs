@@ -293,6 +293,37 @@ pub fn hello() {}";
 }
 
 #[test]
+fn layers_for_byte_range_injection_boundary() {
+    let mut loader = TestLanguageLoader::new();
+    // Inject into each block comment as a separate (non-combined) markdown injection.
+    loader.overwrite_injections(
+        "rust",
+        r#"((block_comment) @injection.content
+ (#set! injection.language "markdown")
+ (#set! injection.include-children))"#
+            .to_string(),
+    );
+    // Two adjacent block comments share a boundary at the byte where the first ends
+    // and the second begins. The boundary byte belongs to the second injection.
+    let input = "/* first *//* second */";
+    let syntax = Syntax::new(input.into(), loader.get("rust"), PARSE_TIMEOUT, &loader).unwrap();
+
+    let second_start = input.find("/* second */").unwrap() as u32;
+
+    let root = syntax.layer(syntax.root());
+    // The first injection covers 0..second_start; the second starts at second_start.
+    let first_inj_layer = root.injection_at_byte_idx(second_start - 1).unwrap().layer;
+    let second_inj_layer = root.injection_at_byte_idx(second_start).unwrap().layer;
+
+    let layers: Vec<_> = syntax
+        .layers_for_byte_range(second_start, second_start)
+        .collect();
+    // Querying at the boundary byte reaches the second injection's layer, not the first.
+    assert!(layers.contains(&second_inj_layer));
+    assert!(!layers.contains(&first_inj_layer));
+}
+
+#[test]
 fn highlight_overlaps_with_injection() {
     let loader = TestLanguageLoader::new();
     // The comment node is highlighted both by the comment capture and as an injection for the

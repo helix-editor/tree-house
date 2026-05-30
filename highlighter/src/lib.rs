@@ -188,9 +188,7 @@ impl Syntax {
             let layer = &self.layers[parent_injection_layer.idx()];
 
             let injection_at_start = layer.injection_at_byte_idx(start)?;
-
-            // +1 because the end is exclusive.
-            let injection_at_end = layer.injection_at_byte_idx(end + 1)?;
+            let injection_at_end = layer.injection_at_byte_idx(end)?;
 
             (injection_at_start.layer == injection_at_end.layer).then(|| {
                 parent_injection_layer = injection_at_start.layer;
@@ -272,7 +270,7 @@ impl LayerData {
     pub fn injections_at_byte_idx(&self, idx: u32) -> impl Iterator<Item = &Injection> {
         let i = self
             .injections
-            .partition_point(|range| range.range.end < idx);
+            .partition_point(|range| range.range.end <= idx);
         self.injections[i..].iter()
     }
 }
@@ -331,3 +329,47 @@ pub const TREE_SITTER_MATCH_LIMIT: u32 = 256;
 // use 32 bit ranges since TS doesn't support files larger than 2GiB anyway
 // and it allows us to save a lot memory/improve cache efficiency
 type Range = std::ops::Range<u32>;
+
+#[cfg(test)]
+mod unit_tests {
+    use super::{Injection, Language, Layer, LayerData};
+    use crate::locals::Locals;
+    use crate::parse::LayerUpdateFlags;
+
+    fn make_injection(start: u32, end: u32) -> Injection {
+        Injection {
+            range: start..end,
+            layer: Layer(0),
+            matched_node_range: start..end,
+        }
+    }
+
+    fn layer_with_injections(injections: Vec<Injection>) -> LayerData {
+        LayerData {
+            language: Language(0),
+            parse_tree: None,
+            ranges: vec![],
+            injections,
+            flags: LayerUpdateFlags::default(),
+            parent: None,
+            locals: Locals::default(),
+        }
+    }
+
+    #[test]
+    fn injection_at_byte_idx_exclusive_end() {
+        let layer = layer_with_injections(vec![make_injection(5, 10)]);
+        // Byte 9 is the last byte of the range 5..10.
+        assert!(layer.injection_at_byte_idx(9).is_some());
+        // Byte 10 is the exclusive end and is not in the range.
+        assert!(layer.injection_at_byte_idx(10).is_none());
+    }
+
+    #[test]
+    fn injection_at_byte_idx_adjacent() {
+        // The boundary byte belongs to the second of two adjacent injections.
+        let layer = layer_with_injections(vec![make_injection(0, 10), make_injection(10, 20)]);
+        let inj = layer.injection_at_byte_idx(10).unwrap();
+        assert_eq!(inj.range, 10..20);
+    }
+}
