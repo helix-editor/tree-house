@@ -732,6 +732,17 @@ fn intersect_ranges_impl(
     // filter by the excluded ranges
     let mut parent_ranges = exclude_ranges(parent_ranges, excluded_ranges).peekable();
     let mut next_parent_range = parent_ranges.next();
+    // Pre-merge any adjacent parent ranges before the first iteration so that the very first
+    // intersection is computed against the full merged span rather than just the first piece.
+    while let Some(ref mut current) = next_parent_range {
+        match parent_ranges.peek() {
+            Some(next) if next.start == current.end => {
+                current.end = next.end;
+                parent_ranges.next();
+            }
+            _ => break,
+        }
+    }
     from_fn(move || {
         loop {
             // If either range is exhausted, so is this iterator
@@ -751,19 +762,21 @@ fn intersect_ranges_impl(
             let intersection = range.start..std::cmp::min(range.end, parent_range.end);
             range.start = intersection.end;
 
-            // Discard any parents that fully precede the new range
+            // Discard any parents that fully precede the new range, merging any adjacent ones
+            // into the replacement so the next intersection is computed against the full span.
             while let Some(parent_range) = &next_parent_range {
                 if parent_range.end <= range.start {
-                    next_parent_range = parent_ranges.next();
-                    // merge adjacent parent ranges
-                    if let Some(next_parent_range) = &mut next_parent_range {
-                        if let Some(next_next_range) = parent_ranges.peek() {
-                            if next_parent_range.end == next_next_range.start {
-                                next_parent_range.end = next_next_range.end;
+                    let mut next = parent_ranges.next();
+                    while let Some(ref mut current) = next {
+                        match parent_ranges.peek() {
+                            Some(n) if n.start == current.end => {
+                                current.end = n.end;
                                 parent_ranges.next();
                             }
+                            _ => break,
                         }
                     }
+                    next_parent_range = next;
                 } else {
                     break;
                 }
