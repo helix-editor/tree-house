@@ -5,12 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+<!-- ## [Unreleased] -->
+
+## [v0.3.1] - 2026-05-30
+
+> [!NOTE]
+> This version does not have any breaking API changes to the highlighter, but the dependency on the bindings (`tree-house-bindings`) has been updated to require v0.3, which includes breaking changes to parsing functions.
 
 ### Added
 
-* Derived `Hash` for `Highlight`  ([bd161d96fac8](https://github.com/helix-editor/tree-house/commit/bd161d96fac8))
-* Derived `Clone` for `Syntax`  ([0fe37c6cc48b](https://github.com/helix-editor/tree-house/commit/0fe37c6cc48b))
+* Derived `Hash` for `Highlight` ([bd161d96fac8](https://github.com/helix-editor/tree-house/commit/bd161d96fac8))
+* Derived `Clone` for `Syntax` ([0fe37c6cc48b](https://github.com/helix-editor/tree-house/commit/0fe37c6cc48b))
+
+### Fixed
+
+* Fixed a panic in `Highlighter::advance` when multiple captures match the same node and more than one has no highlight in the current theme ([5734850e](https://github.com/helix-editor/tree-house/commit/5734850e), [helix#14751](https://github.com/helix-editor/helix/issues/14751), [#37](https://github.com/helix-editor/tree-house/issues/37))
+* Fixed a silent bug where a child node's capture could replace an ancestor node's highlight in `active_highlights` when they share an end byte ([5734850e](https://github.com/helix-editor/tree-house/commit/5734850e))
 
 ## [v0.3.0] - 2025-06-16
 
