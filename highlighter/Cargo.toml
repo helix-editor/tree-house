@@ -5,7 +5,7 @@ authors = [
   "Pascal Kuthe <pascalkuthe@pm.me>",
   "Michael Davis <mcarsondavis@gmail.com>"
 ]
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 license = "MPL-2.0"
 repository = "https://github.com/helix-editor/tree-house"
@@ -32,7 +32,7 @@ indexmap = "2.5.0"
 skidder = { path = "../skidder" }
 
 [dependencies.tree-sitter]
-version = "0.2"
+version = "0.3"
 package = "tree-house-bindings"
 path = "../bindings"
 features = ["ropey"]

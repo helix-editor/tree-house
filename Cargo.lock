@@ -556,7 +556,7 @@ dependencies = [
 
 [[package]]
 name = "tree-house"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "arc-swap",
  "hashbrown",
@@ -575,7 +575,7 @@ dependencies = [
 
 [[package]]
 name = "tree-house-bindings"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "cc",
  "libloading",
