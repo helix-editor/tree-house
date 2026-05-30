@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 REMOTE=https://github.com/tree-sitter/tree-sitter.git
-BRANCH=v0.25.9
+BRANCH=v0.26.9
 
 rm -rf vendor
 rm -rf tmp
