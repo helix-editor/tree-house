@@ -255,13 +255,19 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
 
     pub fn advance(&mut self) -> (HighlightEvent, HighlightList<'_>) {
         let mut refresh = false;
-        let prev_stack_size = self.active_highlights.len();
 
         let pos = self.next_event_offset();
         if self.next_highlight_end == pos {
             self.process_highlight_end(pos);
             refresh = true;
         }
+
+        // Capture the boundary after any ended highlights are removed. Highlights
+        // at indices below this are from prior advance() calls and must not be
+        // replaced or removed by the current one. When refresh=true we return
+        // active_highlights.iter() anyway, so this value only matters for the
+        // search window in start_highlight and the Push slice when refresh=false.
+        let prev_stack_size = self.active_highlights.len();
 
         let mut first_highlight = true;
         while self.next_highlight_start == pos {
@@ -270,7 +276,7 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
             };
             match query_event {
                 QueryIterEvent::EnterInjection(injection) => self.enter_injection(injection.layer),
-                QueryIterEvent::Match(node) => self.start_highlight(node, &mut first_highlight),
+                QueryIterEvent::Match(node) => self.start_highlight(node, &mut first_highlight, prev_stack_size),
                 QueryIterEvent::ExitInjection { injection, state } => {
                     // `state` is returned if the layer is finished according to the `QueryIter`.
                     // The highlighter should only consider a layer finished, though, when it also
@@ -366,7 +372,7 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
         self.process_highlight_end(injection.range.end);
     }
 
-    fn start_highlight(&mut self, node: MatchedNode, first_highlight: &mut bool) {
+    fn start_highlight(&mut self, node: MatchedNode, first_highlight: &mut bool, prev_stack_size: usize) {
         let range = node.node.byte_range();
         // `<QueryIter as Iterator>::next` skips matches with empty ranges.
         debug_assert!(
@@ -415,10 +421,14 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
         // This matches the precedence of Neovim, Zed, and tree-sitter-cli.
         if !*first_highlight {
             // NOTE: `!*first_highlight` implies that the start positions are the same.
-            let insert_position = self
-                .active_highlights
+            // Only search within highlights added during this advance() call. Highlights
+            // before `prev_stack_size` belong to ancestor nodes from prior advance() calls
+            // and must not be replaced or removed by a descendant's captures.
+            let search_start = prev_stack_size.min(self.active_highlights.len());
+            let insert_position = self.active_highlights[search_start..]
                 .iter()
-                .rposition(|h| h.end <= range.end);
+                .rposition(|h| h.end <= range.end)
+                .map(|rel_idx| rel_idx + search_start);
             if let Some(idx) = insert_position {
                 match self.active_highlights[idx].end.cmp(&range.end) {
                     // If there is a prior highlight for this start..end range, replace it.
