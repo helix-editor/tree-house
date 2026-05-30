@@ -163,7 +163,7 @@ where
         let end = match range.end_bound() {
             std::ops::Bound::Included(&i) => i + 1,
             std::ops::Bound::Excluded(&i) => i,
-            std::ops::Bound::Unbounded => src.len_bytes() as u32,
+            std::ops::Bound::Unbounded => src.len() as u32,
         };
         let range = start..end;
         let node = syntax.tree().root_node();
