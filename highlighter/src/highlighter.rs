@@ -276,7 +276,9 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
             };
             match query_event {
                 QueryIterEvent::EnterInjection(injection) => self.enter_injection(injection.layer),
-                QueryIterEvent::Match(node) => self.start_highlight(node, &mut first_highlight, prev_stack_size),
+                QueryIterEvent::Match(node) => {
+                    self.start_highlight(node, &mut first_highlight, prev_stack_size)
+                }
                 QueryIterEvent::ExitInjection { injection, state } => {
                     // `state` is returned if the layer is finished according to the `QueryIter`.
                     // The highlighter should only consider a layer finished, though, when it also
@@ -372,7 +374,12 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
         self.process_highlight_end(injection.range.end);
     }
 
-    fn start_highlight(&mut self, node: MatchedNode, first_highlight: &mut bool, prev_stack_size: usize) {
+    fn start_highlight(
+        &mut self,
+        node: MatchedNode,
+        first_highlight: &mut bool,
+        prev_stack_size: usize,
+    ) {
         let range = node.node.byte_range();
         // `<QueryIter as Iterator>::next` skips matches with empty ranges.
         debug_assert!(

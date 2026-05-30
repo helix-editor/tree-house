@@ -721,7 +721,11 @@ fn highlighter_ancestor_highlight_not_replaced_by_child_capture() {
     let (event, pushed) = highlighter.advance();
     assert_eq!(event, HighlightEvent::Push);
     // The @constant highlight should be pushed as a new entry.
-    assert_eq!(pushed.len(), 1, "expected exactly one new highlight pushed for `B`");
+    assert_eq!(
+        pushed.len(),
+        1,
+        "expected exactly one new highlight pushed for `B`"
+    );
     // The ancestor @function highlight must still be present — it was not replaced.
     assert_eq!(
         highlighter.active_highlights().len(),
