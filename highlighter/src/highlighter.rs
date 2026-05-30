@@ -31,6 +31,9 @@ pub struct HighlightQuery {
     /// Patterns that do not match when the node is a local.
     non_local_patterns: HashSet<Pattern>,
     local_reference_capture: Option<Capture>,
+    /// The first pattern index that belongs to the locals query (i.e. the number of patterns
+    /// from the highlights query). Any pattern with index >= this value is from `locals.scm`.
+    first_locals_pattern: Pattern,
 }
 
 impl HighlightQuery {
@@ -69,6 +72,14 @@ impl HighlightQuery {
             Ok(())
         })?;
 
+        // Patterns with a start byte inside the highlights query source belong to
+        // highlights.scm; everything at or after belongs to locals.scm. Must be computed
+        // before disabling captures, which can invalidate `start_byte_for_pattern`.
+        let first_locals_pattern = query
+            .patterns()
+            .find(|&p| query.start_byte_for_pattern(p) >= highlight_query_text.len())
+            .unwrap_or(Pattern::SENTINEL);
+
         // The highlight query only cares about local.reference captures. All scope and definition
         // captures can be disabled.
         query.disable_capture("local.scope");
@@ -85,6 +96,7 @@ impl HighlightQuery {
             highlight_indices: ArcSwap::from_pointee(vec![None; query.num_captures() as usize]),
             non_local_patterns,
             local_reference_capture: query.get_capture("local.reference"),
+            first_locals_pattern,
             query,
         })
     }
@@ -270,15 +282,19 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
         let prev_stack_size = self.active_highlights.len();
 
         let mut first_highlight = true;
+        let mut local_ref_candidate: Option<(u32, Highlight)> = None;
         while self.next_highlight_start == pos {
             let Some(query_event) = self.advance_query_iter() else {
                 break;
             };
             match query_event {
                 QueryIterEvent::EnterInjection(injection) => self.enter_injection(injection.layer),
-                QueryIterEvent::Match(node) => {
-                    self.start_highlight(node, &mut first_highlight, prev_stack_size)
-                }
+                QueryIterEvent::Match(node) => self.start_highlight(
+                    node,
+                    &mut first_highlight,
+                    prev_stack_size,
+                    &mut local_ref_candidate,
+                ),
                 QueryIterEvent::ExitInjection { injection, state } => {
                     // `state` is returned if the layer is finished according to the `QueryIter`.
                     // The highlighter should only consider a layer finished, though, when it also
@@ -302,6 +318,24 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
                 }
             }
         }
+        // Commit any local reference candidate not cancelled by a discard pattern.
+        if let Some((end, highlight)) = local_ref_candidate {
+            let node = HighlightedNode { end, highlight };
+            let search_start = prev_stack_size.min(self.active_highlights.len());
+            let insert_position = self.active_highlights[search_start..]
+                .iter()
+                .rposition(|h| h.end <= end)
+                .map(|rel_idx| rel_idx + search_start);
+            match insert_position {
+                Some(idx) => match self.active_highlights[idx].end.cmp(&end) {
+                    cmp::Ordering::Equal => self.active_highlights[idx] = node,
+                    cmp::Ordering::Less => self.active_highlights.insert(idx, node),
+                    cmp::Ordering::Greater => unreachable!(),
+                },
+                None => self.active_highlights.extend(Some(node)),
+            }
+        }
+
         self.next_highlight_end = self
             .active_highlights
             .last()
@@ -379,6 +413,7 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
         node: MatchedNode,
         first_highlight: &mut bool,
         prev_stack_size: usize,
+        local_ref_candidate: &mut Option<(u32, Highlight)>,
     ) {
         let range = node.node.byte_range();
         // `<QueryIter as Iterator>::next` skips matches with empty ranges.
@@ -391,7 +426,20 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
             .active_config
             .expect("must have an active config to emit matches");
 
-        let highlight = if Some(node.capture) == config.highlight_query.local_reference_capture {
+        let is_local_reference =
+            Some(node.capture) == config.highlight_query.local_reference_capture;
+
+        // Captures from the locals.scm tier (pattern >= first_locals_pattern) that are not
+        // @local.reference act as discards: they cancel any pending local reference candidate
+        // for this node and leave the highlights.scm highlight intact.
+        if node.pattern >= config.highlight_query.first_locals_pattern && !is_local_reference {
+            if local_ref_candidate.is_some_and(|(end, _)| end == range.end) {
+                *local_ref_candidate = None;
+            }
+            return;
+        }
+
+        let highlight = if is_local_reference {
             // If this capture was a `@local.reference` from the locals queries, look up the
             // text of the node in the current locals cursor and use that highlight.
             let text: Cow<str> = self
@@ -409,12 +457,18 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
             else {
                 return;
             };
-            config
+            let highlight = config
                 .injection_query
                 .local_definition_captures
                 .load()
                 .get(&definition.capture)
-                .copied()
+                .copied();
+            // Store as a candidate rather than replacing immediately. A later discard
+            // pattern in locals.scm can cancel this before it takes effect.
+            if let Some(h) = highlight {
+                *local_ref_candidate = Some((range.end, h));
+            }
+            return;
         } else {
             config.highlight_query.highlight_indices.load()[node.capture.idx()]
         };

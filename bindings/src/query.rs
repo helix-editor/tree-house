@@ -278,9 +278,9 @@ impl Query {
     #[must_use]
     pub fn start_byte_for_pattern(&self, pattern: Pattern) -> usize {
         assert!(
-            pattern.0 < self.text_predicates.len() as u32,
+            pattern.0 < self.patterns.len() as u32,
             "Pattern index is {pattern:?} but the pattern count is {}",
-            self.text_predicates.len(),
+            self.patterns.len(),
         );
         unsafe { ts_query_start_byte_for_pattern(self.raw, pattern.0) as usize }
     }
