@@ -31,7 +31,6 @@ impl Syntax {
         queue.push(self.root);
 
         let mut parser = Parser::new();
-        parser.set_timeout(timeout);
 
         while let Some(layer) = queue.pop() {
             let layer_data = self.layer_mut(layer);
@@ -50,11 +49,11 @@ impl Syntax {
                 }
                 if layer_data.flags.modified {
                     // Re-parse the tree.
-                    layer_data.parse(&mut parser, source, loader)?;
+                    layer_data.parse(&mut parser, source, timeout, loader)?;
                 }
             } else {
                 // always parse if this layer has never been parsed before
-                layer_data.parse(&mut parser, source, loader)?;
+                layer_data.parse(&mut parser, source, timeout, loader)?;
             }
             self.run_injection_query(layer, edits, source, loader, |layer| queue.push(layer));
             self.run_local_query(layer, source, loader);
@@ -80,6 +79,7 @@ impl LayerData {
         &mut self,
         parser: &mut Parser,
         source: RopeSlice,
+        timeout: Duration,
         loader: &impl LanguageLoader,
     ) -> Result<(), Error> {
         let Some(config) = loader.get_config(self.language) else {
@@ -115,7 +115,7 @@ impl LayerData {
                 && tree_range.end >= included_ranges_range.end
         });
 
-        let tree = parser.parse(source, tree).ok_or(Error::Timeout)?;
+        let tree = parser.parse_with_timeout(source, tree, timeout).ok_or(Error::Timeout)?;
         self.parse_tree = Some(tree);
         Ok(())
     }

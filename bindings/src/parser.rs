@@ -1,8 +1,9 @@
 use std::cell::Cell;
+use std::ops::ControlFlow;
 use std::os::raw::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr::NonNull;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{fmt, mem, ptr};
 
 use regex_cursor::Cursor;
@@ -61,13 +62,6 @@ impl Parser {
         }
     }
 
-    pub fn set_timeout(&mut self, duration: Duration) {
-        #[allow(deprecated)]
-        unsafe {
-            ts_parser_set_timeout_micros(self.ptr, duration.as_micros().try_into().unwrap());
-        }
-    }
-
     /// Set the ranges of text that the parser should include when parsing. By default, the parser
     /// will always include entire documents. This function allows you to parse only a *portion*
     /// of a document but still return a syntax tree whose ranges match up with the document as a
@@ -121,7 +115,7 @@ impl Parser {
                 }
             }
         }
-        let input = ParserInputRaw {
+        let raw_input = ParserInputRaw {
             payload: NonNull::from(&mut input).cast(),
             read: read::<I>,
             encoding: InputEncoding::Utf8,
@@ -130,9 +124,98 @@ impl Parser {
 
         unsafe {
             let old_tree = old_tree.map(|tree| tree.as_raw());
-            let new_tree = ts_parser_parse(self.ptr, old_tree, input);
-            new_tree.map(|raw| Tree::from_raw(raw))
+            ts_parser_parse(self.ptr, old_tree, raw_input).map(|raw| Tree::from_raw(raw))
         }
+    }
+
+    /// Parse with a progress/cancellation callback. The callback receives the current
+    /// [`ParseState`] and returns [`ControlFlow::Break`] to cancel parsing.
+    #[must_use]
+    pub fn parse_with_options<I: Input>(
+        &mut self,
+        input: impl IntoInput<Input = I>,
+        old_tree: Option<&Tree>,
+        mut options: ParseOptions<'_>,
+    ) -> Option<Tree> {
+        let mut input = input.into_input();
+        unsafe extern "C" fn read<C: Input>(
+            payload: NonNull<c_void>,
+            byte_index: u32,
+            _position: Point,
+            bytes_read: *mut u32,
+        ) -> *const u8 {
+            let cursor = catch_unwind(AssertUnwindSafe(move || {
+                let input: &mut C = payload.cast().as_mut();
+                let cursor = input.cursor_at(byte_index);
+                let slice = cursor.chunk();
+                let offset: u32 = cursor.offset().try_into().unwrap();
+                let len: u32 = slice.len().try_into().unwrap();
+                (byte_index - offset, slice.as_ptr(), len)
+            }));
+            match cursor {
+                Ok((chunk_offset, ptr, len)) if chunk_offset < len => {
+                    *bytes_read = len - chunk_offset;
+                    ptr.add(chunk_offset as usize)
+                }
+                _ => {
+                    *bytes_read = 0;
+                    ptr::null()
+                }
+            }
+        }
+        let raw_input = ParserInputRaw {
+            payload: NonNull::from(&mut input).cast(),
+            read: read::<I>,
+            encoding: InputEncoding::Utf8,
+            decode: None,
+        };
+
+        // The payload is a thin pointer to the fat pointer stored in options.callback.
+        // The callback reconstructs the fat pointer and calls through it.
+        unsafe extern "C" fn progress_cb(raw_state: NonNull<RawParseState>) -> bool {
+            let raw_ref = raw_state.as_ref();
+            let cb: *mut &mut dyn FnMut(&ParseState) -> ControlFlow<()> =
+                raw_ref.payload.as_ptr().cast();
+            let public_state = ParseState {
+                current_byte_offset: raw_ref.current_byte_offset,
+                has_error: raw_ref.has_error,
+            };
+            (*cb)(&public_state).is_break()
+        }
+
+        let raw_options = RawParseOptions {
+            payload: unsafe {
+                Some(NonNull::new_unchecked(
+                    ptr::addr_of_mut!(options.callback).cast(),
+                ))
+            },
+            progress_callback: Some(progress_cb),
+        };
+
+        unsafe {
+            let old_tree = old_tree.map(|tree| tree.as_raw());
+            ts_parser_parse_with_options(self.ptr, old_tree, raw_input, raw_options)
+                .map(|raw| Tree::from_raw(raw))
+        }
+    }
+
+    /// Parse with a timeout. Returns `None` if parsing is not completed within `timeout`.
+    #[must_use]
+    pub fn parse_with_timeout<I: Input>(
+        &mut self,
+        input: impl IntoInput<Input = I>,
+        old_tree: Option<&Tree>,
+        timeout: Duration,
+    ) -> Option<Tree> {
+        let deadline = Instant::now() + timeout;
+        let mut check = |_: &ParseState| {
+            if Instant::now() >= deadline {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        };
+        self.parse_with_options(input, old_tree, ParseOptions::new(&mut check))
     }
 }
 
@@ -148,6 +231,26 @@ unsafe impl Send for Parser {}
 impl Drop for Parser {
     fn drop(&mut self) {
         PARSER_CACHE.set(Some(RawParser { ptr: self.ptr }));
+    }
+}
+
+/// State passed to the progress callback during parsing.
+#[derive(Debug, Clone, Copy)]
+pub struct ParseState {
+    pub current_byte_offset: u32,
+    pub has_error: bool,
+}
+
+/// Options for [`Parser::parse_with_options`].
+///
+/// The callback receives the current [`ParseState`] and returns [`ControlFlow::Break`] to cancel parsing.
+pub struct ParseOptions<'a> {
+    callback: &'a mut dyn FnMut(&ParseState) -> ControlFlow<()>,
+}
+
+impl<'a> ParseOptions<'a> {
+    pub fn new(callback: &'a mut impl FnMut(&ParseState) -> ControlFlow<()>) -> ParseOptions<'a> {
+        ParseOptions { callback }
     }
 }
 
@@ -197,11 +300,10 @@ pub enum InputEncoding {
     Custom,
 }
 
-#[allow(unused)]
 #[repr(C)]
 #[derive(Debug)]
-struct ParseState {
-    /// The payload passed via `ParseOptions`' `payload` field.
+struct RawParseState {
+    /// The payload passed via `RawParseOptions`' `payload` field.
     payload: NonNull<c_void>,
     current_byte_offset: u32,
     has_error: bool,
@@ -209,13 +311,11 @@ struct ParseState {
 
 /// A function that accepts the current parser state and returns `true` when the parse should be
 /// cancelled.
-#[allow(unused)]
-type ProgressCallback = unsafe extern "C" fn(state: NonNull<ParseState>) -> bool;
+type ProgressCallback = unsafe extern "C" fn(state: NonNull<RawParseState>) -> bool;
 
-#[allow(unused)]
 #[repr(C)]
 #[derive(Debug, Default)]
-struct ParseOptions {
+struct RawParseOptions {
     payload: Option<NonNull<c_void>>,
     progress_callback: Option<ProgressCallback>,
 }
@@ -256,24 +356,15 @@ extern "C" {
         input: ParserInputRaw,
     ) -> Option<NonNull<SyntaxTreeData>>;
 
-    /// Set the maximum duration in microseconds that parsing should be allowed to
-    /// take before halting.
-    ///
-    /// If parsing takes longer than this, it will halt early, returning NULL.
-    /// See [`ts_parser_parse`] for more information.
-    #[deprecated = "use ts_parser_parse_with_options and pass in a calback instead, this will be removed in 0.26"]
-    fn ts_parser_set_timeout_micros(self_: NonNull<ParserData>, timeout_micros: u64);
-
     /// Use the parser to parse some source code and create a syntax tree, with some options.
     ///
     /// See `ts_parser_parse` for more details.
     ///
     /// See `TSParseOptions` for more details on the options.
-    #[allow(unused)]
     fn ts_parser_parse_with_options(
         parser: NonNull<ParserData>,
         old_tree: Option<NonNull<SyntaxTreeData>>,
         input: ParserInputRaw,
-        parse_options: ParseOptions,
+        parse_options: RawParseOptions,
     ) -> Option<NonNull<SyntaxTreeData>>;
 }
