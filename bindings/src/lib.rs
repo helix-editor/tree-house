@@ -37,7 +37,6 @@ impl Point {
 }
 
 #[repr(C)]
-#[non_exhaustive]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Range {
     pub start_point: Point,
