@@ -563,3 +563,37 @@ fn edoc_code_combined_injection_in_markdown() {
         "highlighter/edoc_code_combined_injection_in_markdown.md",
     );
 }
+
+#[test]
+fn combined_injection_no_invalid_ranges() {
+    // Regression test for https://github.com/helix-editor/tree-house/issues/35.
+    //
+    // A Rust file with multiple block doc-comments and a line doc-comment in an impl block
+    // used to trigger Error::InvalidRanges when computing injection ranges for the combined
+    // markdown layer, because intersect_ranges_impl could produce ranges where start > end.
+    let mut loader = TestLanguageLoader::new();
+    loader.shadow_injections(
+        "rust",
+        r#"
+((doc_comment) @injection.content
+ (#set! injection.language "markdown")
+ (#set! injection.combined))"#,
+    );
+    let input = "/**
+ * foo
+ */
+
+impl Foo {
+    /**
+     * foo
+     */
+
+    /// foo
+}";
+    let result = Syntax::new(input.into(), loader.get("rust"), PARSE_TIMEOUT, &loader);
+    assert!(
+        result.is_ok(),
+        "parsing should succeed without Error::InvalidRanges, got: {:?}",
+        result.err()
+    );
+}
