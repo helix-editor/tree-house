@@ -115,7 +115,9 @@ impl LayerData {
                 && tree_range.end >= included_ranges_range.end
         });
 
-        let tree = parser.parse_with_timeout(source, tree, timeout).ok_or(Error::Timeout)?;
+        let tree = parser
+            .parse_with_timeout(source, tree, timeout)
+            .ok_or(Error::Timeout)?;
         self.parse_tree = Some(tree);
         Ok(())
     }
