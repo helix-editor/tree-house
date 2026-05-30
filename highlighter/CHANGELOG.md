@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * Fixed a panic in `Highlighter::advance` when multiple captures match the same node and more than one has no highlight in the current theme ([5734850e](https://github.com/helix-editor/tree-house/commit/5734850e), [helix#14751](https://github.com/helix-editor/helix/issues/14751), [#37](https://github.com/helix-editor/tree-house/issues/37))
 * Fixed a silent bug where a child node's capture could replace an ancestor node's highlight in `active_highlights` when they share an end byte ([5734850e](https://github.com/helix-editor/tree-house/commit/5734850e))
+* Fixed `LayerData::injection_at_byte_idx` and `LayerData::injections_at_byte_idx` to treat injection ranges as exclusive-end: a byte index equal to a range's end is no longer considered inside that range ([0f70c26d](https://github.com/helix-editor/tree-house/commit/0f70c26d))
 
 ## [v0.3.0] - 2025-06-16
 
