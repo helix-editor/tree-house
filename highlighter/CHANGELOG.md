@@ -7,21 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- ## [Unreleased] -->
 
-## [v0.3.1] - 2026-05-30
-
-> [!NOTE]
-> This version does not have any breaking API changes to the highlighter, but the dependency on the bindings (`tree-house-bindings`) has been updated to require v0.3, which includes breaking changes to parsing functions.
+## [v0.4.0] - 2026-05-30
 
 ### Added
 
 * Derived `Hash` for `Highlight` ([bd161d96fac8](https://github.com/helix-editor/tree-house/commit/bd161d96fac8))
 * Derived `Clone` for `Syntax` ([0fe37c6cc48b](https://github.com/helix-editor/tree-house/commit/0fe37c6cc48b))
 
+### Changed
+
+* `LayerData::injection_at_byte_idx` and `LayerData::injections_at_byte_idx` now correctly treat injection ranges as exclusive-end: a byte index equal to a range's end is no longer considered part of that range ([0f70c26d](https://github.com/helix-editor/tree-house/commit/0f70c26d))
+* Non-`@local.*` captures in `locals.scm` no longer override `highlights.scm` highlights. Such captures now act as discards: they cancel a pending `@local.reference` resolution for the same node without affecting the `highlights.scm` result. Query authors should replace workaround highlight captures in `locals.scm` with a discard capture (e.g. `@_`) ([4501ded1](https://github.com/helix-editor/tree-house/commit/4501ded1))
+* The required version of `tree-house-bindings` has been updated to v0.3, which includes breaking changes to parsing functions
+
 ### Fixed
 
-* Fixed a panic in `Highlighter::advance` when multiple captures match the same node and more than one has no highlight in the current theme ([5734850e](https://github.com/helix-editor/tree-house/commit/5734850e), [helix#14751](https://github.com/helix-editor/helix/issues/14751), [#37](https://github.com/helix-editor/tree-house/issues/37))
-* Fixed a silent bug where a child node's capture could replace an ancestor node's highlight in `active_highlights` when they share an end byte ([5734850e](https://github.com/helix-editor/tree-house/commit/5734850e))
-* Fixed `LayerData::injection_at_byte_idx` and `LayerData::injections_at_byte_idx` to treat injection ranges as exclusive-end: a byte index equal to a range's end is no longer considered inside that range ([0f70c26d](https://github.com/helix-editor/tree-house/commit/0f70c26d))
+* Fixed a panic in `Highlighter::advance` when multiple captures match the same node and more than one resolves to no highlight in the current theme ([5734850e](https://github.com/helix-editor/tree-house/commit/5734850e), [helix#14751](https://github.com/helix-editor/helix/issues/14751), [#37](https://github.com/helix-editor/tree-house/issues/37))
+* Fixed a silent bug where a child node's capture could replace an ancestor node's highlight when they share an end byte ([5734850e](https://github.com/helix-editor/tree-house/commit/5734850e))
 
 ## [v0.3.0] - 2025-06-16
 

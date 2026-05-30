@@ -556,7 +556,7 @@ dependencies = [
 
 [[package]]
 name = "tree-house"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "arc-swap",
  "hashbrown",
