@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- ## [Unreleased] -->
 
+## [v0.2.4] - 2026-05-30
+
+### Added
+
+* Added `Range::new` with debug assertions that the end comes after the start positions ([4d81f5ae](https://github.com/helix-editor/tree-house/commit/4d81f5ae4a06995240244ee8930a42161d728331))
+
 ## [v0.2.3] - 2026-02-18
 
 ### Updated
