@@ -45,6 +45,19 @@ pub struct Range {
     pub end_byte: u32,
 }
 
+impl Range {
+    pub fn new(start_point: Point, end_point: Point, start_byte: u32, end_byte: u32) -> Range {
+        debug_assert!(start_point <= end_point);
+        debug_assert!(start_byte <= end_byte);
+        Range {
+            start_point,
+            end_point,
+            start_byte,
+            end_byte,
+        }
+    }
+}
+
 pub trait Input {
     type Cursor: regex_cursor::Cursor;
     fn cursor_at(&mut self, offset: u32) -> &mut Self::Cursor;

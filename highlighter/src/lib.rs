@@ -98,12 +98,12 @@ impl Syntax {
             parse_tree: None,
             language,
             flags: LayerUpdateFlags::default(),
-            ranges: vec![tree_sitter::Range {
-                start_byte: 0,
-                end_byte: u32::MAX,
-                start_point: tree_sitter::Point::ZERO,
-                end_point: tree_sitter::Point::MAX,
-            }],
+            ranges: vec![tree_sitter::Range::new(
+                tree_sitter::Point::ZERO,
+                tree_sitter::Point::MAX,
+                0,
+                u32::MAX,
+            )],
             injections: Vec::new(),
             parent: None,
             locals: Locals::default(),
