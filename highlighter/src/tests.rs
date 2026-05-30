@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -11,7 +12,7 @@ use tree_sitter::{Grammar, InputEdit, Point};
 
 use crate::config::{LanguageConfig, LanguageLoader};
 use crate::fixtures::{check_highlighter_fixture, check_injection_fixture};
-use crate::highlighter::Highlight;
+use crate::highlighter::{Highlight, Highlighter};
 use crate::injections_query::InjectionLanguageMarker;
 use crate::{Language, Layer, Syntax};
 
@@ -88,6 +89,8 @@ struct TestLanguageLoader {
     lang_config: Box<[OnceCell<LanguageConfig>]>,
     overwrites: Box<[Overwrites]>,
     test_theme: RefCell<IndexSet<String>>,
+    /// If set, only scopes in this set receive a highlight; others return `None`.
+    highlight_filter: Option<HashSet<String>>,
 }
 
 impl TestLanguageLoader {
@@ -98,6 +101,7 @@ impl TestLanguageLoader {
             lang_config: (0..grammars.len()).map(|_| OnceCell::new()).collect(),
             overwrites: vec![Overwrites::default(); grammars.len()].into_boxed_slice(),
             test_theme: RefCell::default(),
+            highlight_filter: None,
             languages: grammars
                 .iter()
                 .enumerate()
@@ -142,6 +146,12 @@ impl TestLanguageLoader {
         self.lang_config[lang.idx()] = OnceCell::new();
     }
 
+    /// Restrict the test theme so only the given scopes receive a highlight index.
+    /// All other scopes will return `None` from the configure callback.
+    fn set_highlight_filter(&mut self, scopes: impl IntoIterator<Item = impl Into<String>>) {
+        self.highlight_filter = Some(scopes.into_iter().map(Into::into).collect());
+    }
+
     fn shadow_highlights(&mut self, lang: &str, content: &str) {
         let lang = self.get(lang);
         let skidder_config = skidder_config();
@@ -175,6 +185,11 @@ impl LanguageLoader for TestLanguageLoader {
             );
             let mut theme = self.test_theme.borrow_mut();
             config.configure(|scope| {
+                if let Some(ref allowed) = self.highlight_filter {
+                    if !allowed.contains(scope) {
+                        return None;
+                    }
+                }
                 Some(Highlight::new(theme.insert_full(scope.to_owned()).0 as u32))
             });
             config
@@ -627,4 +642,37 @@ impl Foo {
         "parsing should succeed without Error::InvalidRanges, got: {:?}",
         result.err()
     );
+}
+
+#[test]
+fn highlighter_no_panic_overlapping_captures_missing_theme() {
+    // Regression test for https://github.com/helix-editor/helix/issues/14751.
+    //
+    // When multiple captures match the same node and some have no highlight in the
+    // current theme, `start_highlight` can remove entries that were present in
+    // `active_highlights` before the current `advance()` call began. The subsequent
+    // slice `active_highlights[prev_stack_size..]` then panics.
+    let mut loader = TestLanguageLoader::new();
+    loader.overwrite_highlights(
+        "python",
+        r#"
+(attribute attribute: (identifier) @variable.other.member)
+((identifier) @type   (#match? @type "^[A-Z]"))
+(decorator) @function
+((identifier) @constant  (#match? @constant "^_*[A-Z][A-Z\d_]*$"))
+"#
+        .to_string(),
+    );
+    // `@type` and `@constant` both match `B` but resolve to None in this theme.
+    // Each None-returning capture removes the previously-added highlight for `B`,
+    // and the third removal walks back into highlights added by a prior advance() call.
+    loader.set_highlight_filter(["function", "variable.other.member"]);
+
+    let source = "@a.B";
+    let syntax = Syntax::new(source.into(), loader.get("python"), PARSE_TIMEOUT, &loader)
+        .expect("parse should succeed");
+    let mut highlighter = Highlighter::new(&syntax, source.into(), &loader, 0..);
+    while highlighter.next_event_offset() != u32::MAX {
+        highlighter.advance();
+    }
 }
