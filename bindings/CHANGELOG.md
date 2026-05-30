@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- ## [Unreleased] -->
 
+## [v0.3.1] - 2026-05-30
+
+### Fixed
+
+* Fixed `ParseState` and `ParseOptions` not being re-exported from the crate root, making `parse_with_options` unusable ([10f61ff](https://github.com/helix-editor/tree-house/commit/10f61ff))
+
+## [v0.3.0] - 2026-05-30
+
+### Added
+
+* Added `Parser::parse_with_options` for parsing with a progress/cancellation callback ([c8e4308](https://github.com/helix-editor/tree-house/commit/c8e4308))
+* Added `Parser::parse_with_timeout` as a convenience wrapper around `parse_with_options` ([c8e4308](https://github.com/helix-editor/tree-house/commit/c8e4308))
+* Added `ParseState` (passed to the progress callback) and `ParseOptions` types ([c8e4308](https://github.com/helix-editor/tree-house/commit/c8e4308))
+
+### Removed
+
+* Removed `Parser::set_timeout`. Use `Parser::parse_with_timeout` instead ([c8e4308](https://github.com/helix-editor/tree-house/commit/c8e4308))
+
+### Updated
+
+* Updated the tree-sitter C library to v0.26.9 ([47d87a2](https://github.com/helix-editor/tree-house/commit/47d87a2))
+
 ## [v0.2.4] - 2026-05-30
 
 ### Added
