@@ -794,3 +794,113 @@ fn ranges_intersect(a: &Range, b: &Range) -> bool {
     // Adapted from <https://github.com/helix-editor/helix/blob/8df58b2e1779dcf0046fb51ae1893c1eebf01e7c/helix-core/src/selection.rs#L156-L163>
     a.start == b.start || (a.end > b.start && b.end > a.start)
 }
+
+#[cfg(test)]
+#[allow(clippy::single_range_in_vec_init)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exclude_ranges_no_exclusions() {
+        let result: Vec<Range> =
+            exclude_ranges([0..10, 20..30].into_iter(), [].into_iter()).collect();
+        assert_eq!(result, vec![0..10, 20..30]);
+    }
+
+    #[test]
+    fn exclude_ranges_excludes_prefix() {
+        let result: Vec<Range> = exclude_ranges([0..10].into_iter(), [0..5].into_iter()).collect();
+        assert_eq!(result, vec![5..10]);
+    }
+
+    #[test]
+    fn exclude_ranges_excludes_suffix() {
+        let result: Vec<Range> = exclude_ranges([0..10].into_iter(), [5..10].into_iter()).collect();
+        assert_eq!(result, vec![0..5]);
+    }
+
+    #[test]
+    fn exclude_ranges_excludes_middle() {
+        let result: Vec<Range> = exclude_ranges([0..10].into_iter(), [3..7].into_iter()).collect();
+        assert_eq!(result, vec![0..3, 7..10]);
+    }
+
+    #[test]
+    fn exclude_ranges_full_exclusion() {
+        let result: Vec<Range> = exclude_ranges([0..10].into_iter(), [0..10].into_iter()).collect();
+        assert_eq!(result, vec![]);
+    }
+
+    #[test]
+    fn exclude_ranges_multiple_exclusions() {
+        let result: Vec<Range> =
+            exclude_ranges([0..100].into_iter(), [10..20, 40..50, 70..80].into_iter()).collect();
+        assert_eq!(result, vec![0..10, 20..40, 50..70, 80..100]);
+    }
+
+    #[test]
+    fn exclude_ranges_spans_multiple_input_ranges() {
+        let result: Vec<Range> =
+            exclude_ranges([0..20, 30..50].into_iter(), [15..35].into_iter()).collect();
+        assert_eq!(result, vec![0..15, 35..50]);
+    }
+
+    #[test]
+    fn intersect_ranges_impl_basic() {
+        let result: Vec<Range> =
+            intersect_ranges_impl(10..50, [].into_iter(), [0..100].into_iter()).collect();
+        assert_eq!(result, vec![10..50]);
+    }
+
+    #[test]
+    fn intersect_ranges_impl_with_excluded_child() {
+        let result: Vec<Range> =
+            intersect_ranges_impl(0..100, [30..70].into_iter(), [0..100].into_iter()).collect();
+        assert_eq!(result, vec![0..30, 70..100]);
+    }
+
+    #[test]
+    fn intersect_ranges_impl_non_adjacent_parent_ranges() {
+        let result: Vec<Range> =
+            intersect_ranges_impl(0..100, [].into_iter(), [10..40, 60..90].into_iter()).collect();
+        assert_eq!(result, vec![10..40, 60..90]);
+    }
+
+    #[test]
+    fn intersect_ranges_impl_adjacent_parent_ranges() {
+        // Two adjacent parent ranges must be merged into one to avoid emitting adjacent
+        // injection ranges. The first range's adjacency to the second must be detected before
+        // computing the first intersection, not after yielding it.
+        let result: Vec<Range> =
+            intersect_ranges_impl(0..100, [].into_iter(), [10..50, 50..80].into_iter()).collect();
+        assert_eq!(result, vec![10..80]);
+    }
+
+    #[test]
+    fn intersect_ranges_impl_three_adjacent_parent_ranges() {
+        // All three adjacent ranges must be collapsed into one.
+        let result: Vec<Range> =
+            intersect_ranges_impl(0..100, [].into_iter(), [10..30, 30..50, 50..80].into_iter())
+                .collect();
+        assert_eq!(result, vec![10..80]);
+    }
+
+    #[test]
+    fn intersect_ranges_impl_adjacent_then_gap() {
+        // First two adjacent, third separated: merge only the adjacent pair.
+        let result: Vec<Range> =
+            intersect_ranges_impl(0..100, [].into_iter(), [10..30, 30..50, 60..80].into_iter())
+                .collect();
+        assert_eq!(result, vec![10..50, 60..80]);
+    }
+
+    #[test]
+    fn intersect_ranges_impl_gap_then_adjacent() {
+        // Gap then adjacent: the post-discard merge in the existing code already handles this,
+        // but it should also be correct after the pre-merge fix.
+        let result: Vec<Range> =
+            intersect_ranges_impl(0..100, [].into_iter(), [10..30, 40..60, 60..80].into_iter())
+                .collect();
+        assert_eq!(result, vec![10..30, 40..80]);
+    }
+}
