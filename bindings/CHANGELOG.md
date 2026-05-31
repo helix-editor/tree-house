@@ -7,11 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- ## [Unreleased] -->
 
-## [v0.3.1] - 2026-05-30
+## [v0.3.1] - 2026-05-31
 
 ### Fixed
 
 * Fixed `ParseState` and `ParseOptions` not being re-exported from the crate root, making `parse_with_options` unusable ([10f61ff](https://github.com/helix-editor/tree-house/commit/10f61ff))
+* Fixed a panic in `Query::start_byte_for_pattern` for queries that have patterns but no text predicates: the bounds assertion was incorrectly checking against the number of text predicates rather than the number of patterns ([4501ded](https://github.com/helix-editor/tree-house/commit/4501ded))
 
 ## [v0.3.0] - 2026-05-30
 
