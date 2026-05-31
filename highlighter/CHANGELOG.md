@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * Derived `Hash` for `Highlight` ([bd161d96fac8](https://github.com/helix-editor/tree-house/commit/bd161d96fac8))
 * Derived `Clone` for `Syntax` ([0fe37c6cc48b](https://github.com/helix-editor/tree-house/commit/0fe37c6cc48b))
+* Added `QueryMatchIter`, an iterator across injection layers that yields entire query matches rather than individual captures ([85e8877](https://github.com/helix-editor/tree-house/commit/85e8877))
 
 ### Changed
 
