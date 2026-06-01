@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- ## [Unreleased] -->
 
+### Added
+
+* Add `Query::disable_pattern` ([b7b901d81b27](https://github.com/helix-editor/tree-house/commit/b7b901d81b27))
+
 ## [v0.3.2] - 2026-06-01
 
 ### Fixed
