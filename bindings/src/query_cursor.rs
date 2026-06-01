@@ -3,7 +3,7 @@ use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::mem;
 use std::ops::Range;
-use std::ptr::{self, NonNull};
+use std::ptr::NonNull;
 
 use crate::node::NodeRaw;
 use crate::query::{Capture, Pattern, Query, QueryData};
@@ -33,7 +33,7 @@ impl<'tree, I: Input> QueryCursor<'_, 'tree, I> {
             id: 0,
             pattern_index: 0,
             capture_count: 0,
-            captures: ptr::null(),
+            captures: None,
         };
         loop {
             let success =
@@ -41,11 +41,11 @@ impl<'tree, I: Input> QueryCursor<'_, 'tree, I> {
             if !success {
                 return None;
             }
-            let matched_nodes = unsafe {
-                slice::from_raw_parts(
-                    query_match.captures.cast(),
-                    query_match.capture_count as usize,
-                )
+            let matched_nodes: &[_] = match query_match.captures {
+                None => &[],
+                Some(ptr) => unsafe {
+                    slice::from_raw_parts(ptr.cast().as_ptr(), query_match.capture_count as usize)
+                },
             };
             let satisfies_predicates = self
                 .query
@@ -70,7 +70,7 @@ impl<'tree, I: Input> QueryCursor<'_, 'tree, I> {
             id: 0,
             pattern_index: 0,
             capture_count: 0,
-            captures: ptr::null(),
+            captures: None,
         };
         let mut capture_idx = 0;
         loop {
@@ -80,11 +80,11 @@ impl<'tree, I: Input> QueryCursor<'_, 'tree, I> {
             if !success {
                 return None;
             }
-            let matched_nodes = unsafe {
-                slice::from_raw_parts(
-                    query_match.captures.cast(),
-                    query_match.capture_count as usize,
-                )
+            let matched_nodes: &[_] = match query_match.captures {
+                None => &[],
+                Some(ptr) => unsafe {
+                    slice::from_raw_parts(ptr.cast().as_ptr(), query_match.capture_count as usize)
+                },
             };
             let satisfies_predicates = self
                 .query
@@ -284,7 +284,7 @@ struct TSQueryMatch {
     id: u32,
     pattern_index: u16,
     capture_count: u16,
-    captures: *const TSQueryCapture,
+    captures: Option<NonNull<TSQueryCapture>>,
 }
 
 extern "C" {
@@ -345,4 +345,73 @@ extern "C" {
     /// will be executed.
     fn ts_query_cursor_set_byte_range(self_: *mut QueryCursorData, start_byte: u32, end_byte: u32);
 
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use crate::{Grammar, InactiveQueryCursor, Input, Parser, Query};
+
+    struct StrInput<'a> {
+        src: &'a str,
+        cursor: &'a str,
+    }
+
+    impl<'a> StrInput<'a> {
+        fn new(src: &'a str) -> Self {
+            Self { src, cursor: src }
+        }
+    }
+
+    impl<'a> Input for StrInput<'a> {
+        type Cursor = &'a str;
+
+        fn cursor_at(&mut self, _offset: u32) -> &mut &'a str {
+            // &str Cursor has offset()=0 and chunk()=self, so the parser reads
+            // src.as_ptr() + byte_index, which is correct for a contiguous string.
+            self.cursor = self.src;
+            &mut self.cursor
+        }
+
+        fn eq(&mut self, r1: std::ops::Range<u32>, r2: std::ops::Range<u32>) -> bool {
+            let b = self.src.as_bytes();
+            b[r1.start as usize..r1.end as usize] == b[r2.start as usize..r2.end as usize]
+        }
+    }
+
+    fn python_grammar() -> Grammar {
+        let so = Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-grammars/python/python.so");
+        unsafe { Grammar::new("python", &so) }.expect("python grammar")
+    }
+
+    /// Regression test: when all captures in a pattern are disabled via
+    /// `Query::disable_capture`, tree-sitter returns `capture_count=0` with a
+    /// null `captures` pointer (valid C convention for an empty array).
+    /// `TSQueryMatch.captures` must be `Option<NonNull<_>>` so the Rust binding
+    /// handles `None` safely instead of passing a null pointer to
+    /// `slice::from_raw_parts`.
+    #[test]
+    fn next_match_with_all_captures_disabled() {
+        let grammar = python_grammar();
+        let mut query = Query::new(grammar, "(identifier) @name", |_, _| Ok(())).unwrap();
+        query.disable_capture("name");
+
+        let src = "x = 1";
+        let mut parser = Parser::new();
+        parser.set_grammar(grammar).unwrap();
+        let tree = parser.parse(StrInput::new(src), None).unwrap();
+
+        let root = tree.root_node();
+        let cursor = InactiveQueryCursor::new(0..src.len() as u32, u32::MAX);
+        let mut cursor = cursor.execute_query(&query, &root, StrInput::new(src));
+
+        // Consuming matches must not panic even though captures is NULL.
+        let mut count = 0;
+        while let Some(mat) = cursor.next_match() {
+            assert!(mat.matched_nodes().count() == 0);
+            count += 1;
+        }
+        assert!(count > 0, "expected at least one match");
+    }
 }
