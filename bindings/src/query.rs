@@ -307,6 +307,16 @@ impl Query {
             ts_query_disable_capture(self.raw, bytes.as_ptr(), bytes.len() as u32);
         }
     }
+
+    /// Disable a certain pattern within a query.
+    ///
+    /// This prevents the pattern from matching and removes most of the overhead
+    /// associated with the pattern. Currently, there is no way to undo this.
+    pub fn disable_pattern(&mut self, pattern: Pattern) {
+        unsafe {
+            ts_query_disable_pattern(self.raw, pattern.0);
+        }
+    }
 }
 
 impl Drop for Query {
@@ -527,4 +537,9 @@ extern "C" {
     /// any resource usage associated with recording the capture. Currently, there
     /// is no way to undo this.
     fn ts_query_disable_capture(self_: NonNull<QueryData>, name: *const u8, length: u32);
+    /// Disable a certain pattern within a query.
+    ///
+    /// This prevents the pattern from matching and removes most of the overhead
+    /// associated with the pattern. Currently, there is no way to undo this.
+    fn ts_query_disable_pattern(self_: NonNull<QueryData>, pattern_index: u32);
 }
