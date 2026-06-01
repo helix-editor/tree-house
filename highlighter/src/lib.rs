@@ -8,7 +8,7 @@ use std::hash::{Hash, Hasher};
 use std::time::Duration;
 use tree_sitter::{IncompatibleGrammarError, Node, Tree};
 
-pub use crate::config::{read_query, LanguageConfig, LanguageLoader};
+pub use crate::config::{read_query, read_query_extends, LanguageConfig, LanguageLoader};
 pub use crate::injections_query::{InjectionLanguageMarker, InjectionsQuery};
 use crate::parse::LayerUpdateFlags;
 pub use crate::query_iter::{CapturedMatch, QueryMatchIter, QueryMatchIterEvent};
