@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- ## [Unreleased] -->
 
+## [v0.3.2] - 2026-06-01
+
+### Fixed
+
+* Fixed NULL handling when attempting to use `QueryCursor::next_match` / `QueryCursor::next_matched_node` on a query where all captures had been disabled with `Query::disable_capture` ([10f61ff](https://github.com/helix-editor/tree-house/commit/10f61ff))
+
 ## [v0.3.1] - 2026-05-31
 
 ### Fixed

@@ -5,7 +5,7 @@ authors = [
   "Pascal Kuthe <pascalkuthe@pm.me>",
   "Michael Davis <mcarsondavis@gmail.com>"
 ]
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 license = "MPL-2.0"
 repository = "https://github.com/helix-editor/tree-house"
