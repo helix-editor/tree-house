@@ -219,7 +219,7 @@ impl Query {
     fn get_string(&self, str: QueryStr) -> &str {
         let value_id = str.0;
         // need an assertions because the ts c api does not do bounds check
-        assert!(value_id <= self.num_strings, "invalid value index");
+        assert!(value_id < self.num_strings, "invalid value index");
         unsafe {
             let mut len = 0;
             let ptr = ts_query_string_value_for_id(self.raw, value_id, &mut len);
@@ -235,7 +235,7 @@ impl Query {
     pub fn capture_name(&self, capture_idx: Capture) -> &str {
         let capture_idx = capture_idx.0;
         // need an assertions because the ts c api does not do bounds check
-        assert!(capture_idx <= self.num_captures, "invalid capture index");
+        assert!(capture_idx < self.num_captures, "invalid capture index");
         let mut length = 0;
         unsafe {
             let ptr = ts_query_capture_name_for_id(self.raw, capture_idx, &mut length);
