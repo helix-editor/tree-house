@@ -57,7 +57,7 @@ fn input_matches_str<I: Input>(str: &str, range: Range<u32>, input: &mut I) -> b
     if cursor.chunk()[start_in_chunk..] != str[..cursor.chunk().len() - start_in_chunk] {
         return false;
     }
-    str = &str[..cursor.chunk().len() - start_in_chunk];
+    str = &str[cursor.chunk().len() - start_in_chunk..];
     while cursor.advance() {
         if str.len() <= cursor.chunk().len() {
             return &cursor.chunk()[..range.end - cursor.offset()] == str;
@@ -453,4 +453,128 @@ extern "C" {
         step_count: &mut u32,
     ) -> *const PredicateStep;
 
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ops::Range;
+
+    use regex_cursor::Cursor;
+
+    use super::input_matches_str;
+    use crate::Input;
+
+    /// A cursor over a fixed, explicit set of chunks, so a test can place a
+    /// chunk boundary at an exact byte.
+    struct ChunkedCursor {
+        chunks: Vec<Vec<u8>>,
+        idx: usize,
+        offset: usize,
+    }
+
+    impl Cursor for ChunkedCursor {
+        fn chunk(&self) -> &[u8] {
+            &self.chunks[self.idx]
+        }
+        fn advance(&mut self) -> bool {
+            if self.idx + 1 < self.chunks.len() {
+                self.offset += self.chunks[self.idx].len();
+                self.idx += 1;
+                true
+            } else {
+                false
+            }
+        }
+        fn backtrack(&mut self) -> bool {
+            if self.idx > 0 {
+                self.idx -= 1;
+                self.offset -= self.chunks[self.idx].len();
+                true
+            } else {
+                false
+            }
+        }
+        fn total_bytes(&self) -> Option<usize> {
+            Some(self.chunks.iter().map(Vec::len).sum())
+        }
+        fn offset(&self) -> usize {
+            self.offset
+        }
+    }
+
+    struct ChunkedInput {
+        cursor: ChunkedCursor,
+        full: Vec<u8>,
+    }
+
+    impl ChunkedInput {
+        fn new(chunks: &[&str]) -> Self {
+            let chunks: Vec<Vec<u8>> = chunks.iter().map(|c| c.as_bytes().to_vec()).collect();
+            let full = chunks.iter().flatten().copied().collect();
+            ChunkedInput {
+                cursor: ChunkedCursor {
+                    chunks,
+                    idx: 0,
+                    offset: 0,
+                },
+                full,
+            }
+        }
+    }
+
+    impl Input for ChunkedInput {
+        type Cursor = ChunkedCursor;
+        fn cursor_at(&mut self, offset: u32) -> &mut ChunkedCursor {
+            let offset = offset as usize;
+            self.cursor.idx = 0;
+            self.cursor.offset = 0;
+            while self.cursor.offset + self.cursor.chunk().len() <= offset {
+                if !self.cursor.advance() {
+                    break;
+                }
+            }
+            &mut self.cursor
+        }
+        fn eq(&mut self, range1: Range<u32>, range2: Range<u32>) -> bool {
+            self.full[range1.start as usize..range1.end as usize]
+                == self.full[range2.start as usize..range2.end as usize]
+        }
+    }
+
+    fn matches(chunks: &[&str], needle: &str, range: Range<u32>) -> bool {
+        let mut input = ChunkedInput::new(chunks);
+        input_matches_str(needle, range, &mut input)
+    }
+
+    #[test]
+    fn single_chunk() {
+        // Hotpath: whole range inside one chunk.
+        assert!(matches(&["hello world"], "world", 6..11));
+        assert!(!matches(&["hello world"], "xorld", 6..11));
+    }
+
+    #[test]
+    fn multi_chunk_match() {
+        // "abcdef" with a chunk boundary between "abc" and "def".
+        // The text really is "abcdef", so #eq? against "abcdef" must match.
+        assert!(matches(&["abc", "def"], "abcdef", 0..6));
+    }
+
+    #[test]
+    fn multi_chunk_mismatch() {
+        assert!(!matches(&["abc", "def"], "abcXef", 0..6));
+    }
+
+    #[test]
+    fn multi_chunk_match_offset_start() {
+        // The captured range starts partway into the first chunk and spans
+        // three chunks: "xx|ab|cd|ef|yy", capturing bytes 2..8 == "abcdef".
+        assert!(matches(&["xxab", "cd", "efyy"], "abcdef", 2..8));
+    }
+
+    #[test]
+    fn many_small_chunks() {
+        assert!(matches(&["a", "b", "c", "d", "e", "f"], "abcdef", 0..6));
+        assert!(!matches(&["a", "b", "c", "d", "e", "f"], "abcdeX", 0..6));
+    }
 }
