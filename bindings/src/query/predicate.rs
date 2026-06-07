@@ -160,7 +160,7 @@ impl Query {
                     let capture_idx = predicate.capture_arg(0)?;
                     let arg2 = predicate.arg(1);
 
-                    let negated = matches!(predicate.name(), "not-eq?" | "not-any-eq?");
+                    let negated = matches!(predicate.name(), "not-eq?" | "any-not-eq?");
                     let match_all = matches!(predicate.name(), "eq?" | "not-eq?");
                     let kind = match arg2 {
                         PredicateArg::Capture(capture) => TextPredicateKind::EqCapture(capture),
