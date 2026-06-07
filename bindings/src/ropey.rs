@@ -42,7 +42,7 @@ impl<'a> Input for RopeInput<'a> {
         // this cursor is optimized for contiguous reads which are by far the most common during parsing
         // very far jumps (like injections at the other end of the document) are handled
         // by starting a new cursor (new chunks iterator)
-        if offset < self.cursor.offset() || offset - self.cursor.offset() > 4906 {
+        if offset < self.cursor.offset() || offset - self.cursor.offset() > 4096 {
             self.cursor = regex_cursor::RopeyCursor::at(self.src, offset);
         } else {
             while self.cursor.offset() + self.cursor.chunk().len() <= offset {
