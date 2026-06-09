@@ -59,6 +59,9 @@ typedef struct {
  *    by other sibling nodes that weren't specified in the pattern.
  * - `is_last_child` - Indicates that the node matching this step cannot have any
  *    subsequent named siblings.
+ * - `is_descendant` - Indicates that the node matching this step may occur at any
+ *    depth within the parent pattern's node, rather than only as a direct child.
+ *    Set when the step is preceded by the `...` operator.
  *
  * For simple patterns, steps are matched in sequential order. But in order to
  * handle alternative/repeated/optional sub-patterns, query steps are not always
@@ -110,6 +113,7 @@ typedef struct {
   bool root_pattern_guaranteed: 1;
   bool parent_pattern_guaranteed: 1;
   bool is_missing: 1;
+  bool is_descendant: 1;
 } QueryStep;
 
 /*
@@ -1930,6 +1934,33 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
     // If this pattern cannot match, store the pattern index so that it can be
     // returned to the caller.
     if (analysis.finished_parent_symbols.size == 0) {
+      // The analysis walks the grammar one level at a time, so it cannot follow a
+      // descendant step to an arbitrary depth. If this subtree contains a `...`
+      // step, then a node that the analysis could not place may still be matched
+      // deeper at runtime, so the pattern is not necessarily impossible. Treat
+      // these steps as fallible, the same as an aborted analysis, and accept the
+      // pattern; the executor searches for the descendant dynamically.
+      bool has_descendant_step = false;
+      for (unsigned j = parent_step_index + 1; j < self->steps.size; j++) {
+        QueryStep *step = array_get(&self->steps, j);
+        if (step->depth <= parent_depth || step->depth == PATTERN_DONE_MARKER) break;
+        if (step->is_descendant) {
+          has_descendant_step = true;
+          break;
+        }
+      }
+      if (has_descendant_step) {
+        for (unsigned j = parent_step_index + 1; j < self->steps.size; j++) {
+          QueryStep *step = array_get(&self->steps, j);
+          if (step->depth <= parent_depth || step->depth == PATTERN_DONE_MARKER) break;
+          if (!step->is_dead_end) {
+            step->parent_pattern_guaranteed = false;
+            step->root_pattern_guaranteed = false;
+          }
+        }
+        continue;
+      }
+
       uint16_t impossible_step_index;
       if (analysis.final_step_indices.size > 0) {
         impossible_step_index = *array_back(&analysis.final_step_indices);
@@ -1997,6 +2028,17 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
           break;
         }
       }
+    }
+  }
+
+  // A descendant step can always fail to match at a given node, since it goes on
+  // to search deeper, so it is never guaranteed. Clear its guaranteed flags
+  // before fallibility is propagated backward to its predecessors.
+  for (unsigned i = 0; i < self->steps.size; i++) {
+    QueryStep *step = array_get(&self->steps, i);
+    if (step->is_descendant) {
+      step->root_pattern_guaranteed = false;
+      step->parent_pattern_guaranteed = false;
     }
   }
 
@@ -2657,6 +2699,7 @@ static TSQueryError ts_query__parse_pattern(
 
       // Parse the child patterns
       bool child_is_immediate = false;
+      bool child_is_descendant = false;
       uint16_t last_child_step_index = 0;
       uint16_t negated_field_count = 0;
       TSFieldId negated_field_ids[MAX_NEGATED_FIELD_COUNT];
@@ -2695,8 +2738,24 @@ static TSQueryError ts_query__parse_pattern(
           continue;
         }
 
+        // Parse a descendant operator. A `...` before a child means the child
+        // may match at any depth within this node, not only as a direct child.
+        // This is checked before the sibling anchor because `.` is a prefix of
+        // `...`.
+        if (
+          stream->next == '.' &&
+          stream->end - stream->input >= 3 &&
+          stream->input[1] == '.' &&
+          stream->input[2] == '.'
+        ) {
+          child_is_descendant = true;
+          stream_advance(stream);
+          stream_advance(stream);
+          stream_advance(stream);
+          stream_skip_whitespace(stream);
+        }
         // Parse a sibling anchor
-        if (stream->next == '.') {
+        else if (stream->next == '.') {
           child_is_immediate = true;
           stream_advance(stream);
           stream_skip_whitespace(stream);
@@ -2711,6 +2770,10 @@ static TSQueryError ts_query__parse_pattern(
           is_inside_alternation,
           &child_capture_quantifiers
         );
+        // Mark the first step of the just-parsed child as a descendant step.
+        if (child_is_descendant && self->steps.size > step_index) {
+          array_get(&self->steps, step_index)->is_descendant = true;
+        }
         // In the event we only parsed a predicate, meaning no new steps were added,
         // then subtract one so we're not indexing past the end of the array
         if (step_index == self->steps.size) step_index--;
@@ -2763,6 +2826,7 @@ static TSQueryError ts_query__parse_pattern(
 
         last_child_step_index = step_index;
         child_is_immediate = false;
+        child_is_descendant = false;
         capture_quantifiers_clear(&child_capture_quantifiers);
       }
       capture_quantifiers_delete(&child_capture_quantifiers);
@@ -3835,6 +3899,16 @@ static inline bool ts_query_cursor__should_descend(
     ) {
       return true;
     }
+    // A descendant step keeps descending through the whole parent subtree, even
+    // once the cursor is already at or past its nominal depth. It is removed in
+    // the leave-node logic when the cursor rises back above the parent.
+    if (
+      next_step->is_descendant &&
+      next_step->depth != PATTERN_DONE_MARKER &&
+      (uint32_t)state->start_depth + next_step->depth <= self->depth + 1
+    ) {
+      return true;
+    }
   }
 
   if (self->depth >= self->max_start_depth) {
@@ -4130,8 +4204,15 @@ static inline bool ts_query_cursor__advance(
           copy_count = 0;
 
           // Check that the node matches all of the criteria for the next
-          // step of the pattern.
-          if ((uint32_t)state->start_depth + (uint32_t)step->depth != self->depth) continue;
+          // step of the pattern. A descendant step is eligible at any depth at
+          // or below its nominal position, so that it can match arbitrarily deep
+          // within the parent node; a normal step must be at its exact depth.
+          uint32_t want_depth = (uint32_t)state->start_depth + (uint32_t)step->depth;
+          if (step->is_descendant) {
+            if (self->depth < want_depth) continue;
+          } else if (self->depth != want_depth) {
+            continue;
+          }
 
           // Determine if this node matches this step of the pattern, and also
           // if this node can have later siblings that match this step of the
@@ -4191,6 +4272,10 @@ static inline bool ts_query_cursor__advance(
 
           // Remove states immediately if it is ever clear that they cannot match.
           if (!node_does_match) {
+            // A descendant step is not removed when a node fails to match; it
+            // keeps searching deeper. It is removed in the leave-node logic once
+            // the cursor ascends back out of the parent node.
+            if (step->is_descendant) continue;
             if (!later_sibling_can_match) {
               LOG(
                 "  discard state. pattern:%u, step:%u\n",
@@ -4207,12 +4292,30 @@ static inline bool ts_query_cursor__advance(
             continue;
           }
 
+          // When a descendant step matches a node, the state must be split so
+          // that matching can continue both here and deeper in the subtree. One
+          // copy stays at this step to search the node's descendants for further
+          // matches; the original advances past the step below. The copy is made
+          // before this node is captured, so it carries only the captures
+          // accumulated before this match.
+          if (step->is_descendant) {
+            if (ts_query_cursor__copy_state(self, &state)) {
+              LOG(
+                "  split descendant state. pattern:%u, step:%u\n",
+                state->pattern_index,
+                state->step_index
+              );
+              copy_count++;
+            }
+          }
+
           // Some patterns can match their root node in multiple ways, capturing different
           // children. If this pattern step could match later children within the same
           // parent, then this query state cannot simply be updated in place. It must be
           // split into two states: one that matches this node, and one which skips over
-          // this node, to preserve the possibility of matching later siblings.
-          if (later_sibling_can_match && (
+          // this node, to preserve the possibility of matching later siblings. Descendant
+          // steps are split above instead, so this split is skipped for them.
+          if (!step->is_descendant && later_sibling_can_match && (
             step->contains_captures ||
             ts_query__step_is_fallible(self->query, state->step_index)
           )) {

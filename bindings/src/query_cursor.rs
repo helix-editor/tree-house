@@ -385,6 +385,110 @@ mod tests {
         unsafe { Grammar::new("python", &so) }.expect("python grammar")
     }
 
+    /// Run `query_src` against `src` parsed as python and return the sorted start
+    /// bytes of every captured node, one entry per capture per match. The python
+    /// fixtures nest `integer` nodes inside `list` literals, so an `integer` is a
+    /// direct child of its enclosing `list` but a deep descendant of any outer
+    /// `list` or of the `module`.
+    fn descendant_capture_bytes(query_src: &str, src: &str) -> Vec<u32> {
+        let grammar = python_grammar();
+        let query = Query::new(grammar, query_src, |_, _| Ok(())).unwrap();
+        let mut parser = Parser::new();
+        parser.set_grammar(grammar).unwrap();
+        let tree = parser.parse(StrInput::new(src), None).unwrap();
+        let root = tree.root_node();
+        let cursor = InactiveQueryCursor::new(0..src.len() as u32, u32::MAX);
+        let mut cursor = cursor.execute_query(&query, &root, StrInput::new(src));
+        let mut bytes = Vec::new();
+        while let Some(mat) = cursor.next_match() {
+            for mn in mat.matched_nodes() {
+                bytes.push(mn.node.start_byte());
+            }
+        }
+        bytes.sort();
+        bytes
+    }
+
+    /// `...` still matches a child that happens to be directly nested. In `[1]`
+    /// the integer at byte 1 is a direct child of the list.
+    #[test]
+    fn descendant_matches_direct_child() {
+        assert_eq!(descendant_capture_bytes("(list ... (integer) @n)", "[1]"), vec![1]);
+    }
+
+    /// In `[[1]]` the integer at byte 2 is two levels down. The outer list matches
+    /// it as a descendant and the inner list matches it as a direct child, so it
+    /// is captured once per ancestor list.
+    #[test]
+    fn descendant_matches_one_level_deep() {
+        assert_eq!(
+            descendant_capture_bytes("(list ... (integer) @n)", "[[1]]"),
+            vec![2, 2],
+        );
+    }
+
+    /// A descendant match is scoped to the matching node's subtree. In `[[1], 2]`
+    /// the integers are at bytes 2 and 6; the outer list sees both, but the inner
+    /// list `[1]` must see only byte 2 and not its sibling at byte 6.
+    #[test]
+    fn descendant_is_scoped_to_the_subtree() {
+        assert_eq!(
+            descendant_capture_bytes("(list ... (integer) @n)", "[[1], 2]"),
+            vec![2, 2, 6],
+        );
+    }
+
+    /// Rooted at the single `module` node, `...` gathers every integer in the tree
+    /// regardless of nesting. `[[1], 2]` has integers at bytes 2 and 6, once each.
+    #[test]
+    fn descendant_from_root_collects_all() {
+        assert_eq!(
+            descendant_capture_bytes("(module ... (integer) @n)", "[[1], 2]"),
+            vec![2, 6],
+        );
+    }
+
+    /// An `integer` is never a direct child of a `module`; it sits under an
+    /// `expression_statement` and a `list`. The direct-child form is therefore
+    /// rejected by the analysis, while the descendant form compiles and matches.
+    #[test]
+    fn descendant_finds_node_that_is_not_a_direct_child() {
+        let grammar = python_grammar();
+        assert!(Query::new(grammar, "(module (integer))", |_, _| Ok(())).is_err());
+        assert!(Query::new(grammar, "(module ... (integer) @n)", |_, _| Ok(())).is_ok());
+        assert_eq!(descendant_capture_bytes("(module ... (integer) @n)", "[1]"), vec![1]);
+    }
+
+    /// A descendant step composes with ordinary children: capture a node on the
+    /// container, then capture a node arbitrarily deep within it. In `[[1]]` the
+    /// outer list at byte 0 is captured as `@l` and the nested integer at byte 2
+    /// as `@n`.
+    #[test]
+    fn descendant_composes_with_a_normal_capture() {
+        let grammar = python_grammar();
+        let query =
+            Query::new(grammar, "(expression_statement (list) @l ... (integer) @n)", |_, _| Ok(()))
+                .unwrap();
+        let mut parser = Parser::new();
+        parser.set_grammar(grammar).unwrap();
+        let src = "[[1]]";
+        let tree = parser.parse(StrInput::new(src), None).unwrap();
+        let root = tree.root_node();
+        let cursor = InactiveQueryCursor::new(0..src.len() as u32, u32::MAX);
+        let mut cursor = cursor.execute_query(&query, &root, StrInput::new(src));
+        let mut by_name: Vec<(String, u32)> = Vec::new();
+        let mut match_count = 0;
+        while let Some(mat) = cursor.next_match() {
+            match_count += 1;
+            for mn in mat.matched_nodes() {
+                by_name.push((mn.capture.name(&query).to_string(), mn.node.start_byte()));
+            }
+        }
+        assert_eq!(match_count, 1);
+        by_name.sort();
+        assert_eq!(by_name, vec![("l".to_string(), 0), ("n".to_string(), 2)]);
+    }
+
     /// Regression test: when all captures in a pattern are disabled via
     /// `Query::disable_capture`, tree-sitter returns `capture_count=0` with a
     /// null `captures` pointer (valid C convention for an empty array).
