@@ -144,8 +144,15 @@ impl<'tree> Iterator for TreeRecursiveWalker<'_, 'tree> {
         let current = self.cursor.node();
 
         if current != self.root && self.cursor.goto_next_sibling() {
+            // Remember `current` so its children are expanded later, then move to its sibling.
             self.queue.push_back(current);
             return Some(self.cursor.node());
+        }
+
+        // `current` has no next sibling: it's the last node at this level. It still needs its
+        // children expanded, so enqueue it too.
+        if current != self.root {
+            self.queue.push_back(current);
         }
 
         while let Some(queued) = self.queue.pop_front() {
@@ -159,6 +166,80 @@ impl<'tree> Iterator for TreeRecursiveWalker<'_, 'tree> {
         }
 
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+    use std::path::Path;
+
+    use super::TreeCursor;
+    use crate::{Grammar, Input, Node, Parser};
+
+    struct StrInput<'a> {
+        src: &'a str,
+        cursor: &'a str,
+    }
+
+    impl<'a> StrInput<'a> {
+        fn new(src: &'a str) -> Self {
+            Self { src, cursor: src }
+        }
+    }
+
+    impl<'a> Input for StrInput<'a> {
+        type Cursor = &'a str;
+
+        fn cursor_at(&mut self, _offset: u32) -> &mut &'a str {
+            self.cursor = self.src;
+            &mut self.cursor
+        }
+
+        fn eq(&mut self, r1: std::ops::Range<u32>, r2: std::ops::Range<u32>) -> bool {
+            let b = self.src.as_bytes();
+            b[r1.start as usize..r1.end as usize] == b[r2.start as usize..r2.end as usize]
+        }
+    }
+
+    fn python_grammar() -> Grammar {
+        let so = Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-grammars/python/python.so");
+        unsafe { Grammar::new("python", &so) }.expect("python grammar")
+    }
+
+    fn collect_descendants(node: &Node, out: &mut HashSet<usize>) {
+        for i in 0..node.child_count() {
+            let child = node.child(i).unwrap();
+            out.insert(child.id());
+            collect_descendants(&child, out);
+        }
+    }
+
+    #[test]
+    fn recursive_walker_visits_every_descendant() {
+        let grammar = python_grammar();
+        let src = "x = 1\ny = [1, 2, 3]\n";
+        let mut parser = Parser::new();
+        parser.set_grammar(grammar).unwrap();
+        let tree = parser.parse(StrInput::new(src), None).unwrap();
+        let root = tree.root_node();
+
+        let mut expected = HashSet::new();
+        collect_descendants(&root, &mut expected);
+
+        let mut cursor = TreeCursor::new(&root);
+        let visited: Vec<usize> = (&mut cursor).into_iter().map(|n| n.id()).collect();
+        let unique: HashSet<usize> = visited.iter().copied().collect();
+
+        assert_eq!(
+            visited.len(),
+            unique.len(),
+            "walker must not visit a node more than once"
+        );
+        assert_eq!(
+            unique, expected,
+            "walker must visit every descendant exactly once"
+        );
     }
 }
 

@@ -162,8 +162,15 @@ impl<'tree> Iterator for TreeRecursiveWalker<'_, 'tree> {
         let current = self.cursor.node();
 
         if current != self.root && self.cursor.goto_next_sibling() {
+            // Remember `current` so its children are expanded later, then move to its sibling.
             self.queue.push_back(current);
             return Some(self.cursor.node());
+        }
+
+        // `current` has no next sibling: it's the last node at this level. It still needs its
+        // children expanded, so enqueue it too.
+        if current != self.root {
+            self.queue.push_back(current);
         }
 
         while let Some(queued) = self.queue.pop_front() {
