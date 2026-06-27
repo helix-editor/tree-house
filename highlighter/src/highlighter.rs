@@ -191,6 +191,10 @@ pub struct Highlighter<'a, 'tree, Loader: LanguageLoader> {
     next_highlight_end: u32,
     next_highlight_start: u32,
     active_config: Option<&'a LanguageConfig>,
+    // Snapshots of the active config's `ArcSwap`-backed lookup tables, refreshed only when
+    // `active_config` changes (on injection enter/exit).
+    active_highlight_indices: Option<Arc<Vec<Option<Highlight>>>>,
+    active_local_definition_captures: Option<Arc<HashMap<Capture, Highlight>>>,
     // The current layer and per-layer state could be tracked on the QueryIter itself (see
     // `QueryIter::current_layer` and `QueryIter::layer_state`) however the highlighter peeks the
     // query iter. The query iter is always one event ahead, so it will enter/exit injections
@@ -243,8 +247,11 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
     ) -> Self {
         let mut query = QueryIter::new(syntax, src, HighlightQueryLoader(loader), range);
         let active_language = query.current_language();
+        let active_config = query.loader().0.get_config(active_language);
         let mut res = Highlighter {
-            active_config: query.loader().0.get_config(active_language),
+            active_config: None,
+            active_highlight_indices: None,
+            active_local_definition_captures: None,
             next_query_event: None,
             current_layer: query.current_layer(),
             layer_states: Default::default(),
@@ -253,8 +260,20 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
             next_highlight_start: 0,
             query,
         };
+        res.set_active_config(active_config);
         res.advance_query_iter();
         res
+    }
+
+    // Set the active language config and snapshot its lookup tables.
+    fn set_active_config(&mut self, config: Option<&'a LanguageConfig>) {
+        self.active_config = config;
+        // The snapshots are read on the per-match hot path, so they are loaded once here
+        // rather than re-loading the `ArcSwap`s for every captured node.
+        self.active_highlight_indices =
+            config.map(|config| config.highlight_query.highlight_indices.load_full());
+        self.active_local_definition_captures =
+            config.map(|config| config.injection_query.local_definition_captures.load_full());
     }
 
     pub fn active_highlights(&self) -> HighlightList<'_> {
@@ -314,7 +333,8 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
                         refresh = true;
                     }
                     let active_language = self.query.syntax().layer(self.current_layer).language;
-                    self.active_config = self.query.loader().0.get_config(active_language);
+                    let config = self.query.loader().0.get_config(active_language);
+                    self.set_active_config(config);
                 }
             }
         }
@@ -390,7 +410,8 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
     fn enter_injection(&mut self, layer: Layer) {
         debug_assert_eq!(layer, self.current_layer);
         let active_language = self.query.syntax().layer(layer).language;
-        self.active_config = self.query.loader().0.get_config(active_language);
+        let config = self.query.loader().0.get_config(active_language);
+        self.set_active_config(config);
 
         let state = self.layer_states.entry(layer).or_default();
         state.parent_highlights = self.active_highlights.len();
@@ -457,10 +478,10 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
             else {
                 return;
             };
-            let highlight = config
-                .injection_query
-                .local_definition_captures
-                .load()
+            let highlight = self
+                .active_local_definition_captures
+                .as_ref()
+                .expect("must have an active config to emit matches")
                 .get(&definition.capture)
                 .copied();
             // Store as a candidate rather than replacing immediately. A later discard
@@ -470,7 +491,9 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
             }
             return;
         } else {
-            config.highlight_query.highlight_indices.load()[node.capture.idx()]
+            self.active_highlight_indices
+                .as_deref()
+                .expect("must have an active config to emit matches")[node.capture.idx()]
         };
 
         let highlight = highlight.map(|highlight| HighlightedNode {
