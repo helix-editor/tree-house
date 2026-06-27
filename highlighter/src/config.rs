@@ -47,11 +47,21 @@ static INHERITS_REGEX: Lazy<Regex> =
 
 /// reads a query by invoking `read_query_text`, handles any `inherits` directives
 pub fn read_query(language: &str, mut read_query_text: impl FnMut(&str) -> String) -> String {
-    fn read_query_impl(language: &str, read_query_text: &mut impl FnMut(&str) -> String) -> String {
+    fn read_query_impl(
+        language: &str,
+        read_query_text: &mut impl FnMut(&str) -> String,
+        // The chain of languages currently being expanded, used to break cyclic
+        // `; inherits:` directives (e.g. `a` inherits `b` and `b` inherits `a`).
+        chain: &mut Vec<String>,
+    ) -> String {
+        if chain.iter().any(|ancestor| ancestor == language) {
+            return String::new();
+        }
+        chain.push(language.to_string());
         let query = read_query_text(language);
 
         // replaces all "; inherits <language>(,<language>)*" with the queries of the given language(s)
-        INHERITS_REGEX
+        let result = INHERITS_REGEX
             .replace_all(&query, |captures: &regex::Captures| {
                 captures[1]
                     .split(',')
@@ -60,15 +70,17 @@ pub fn read_query(language: &str, mut read_query_text: impl FnMut(&str) -> Strin
                         write!(
                             output,
                             "\n{}\n",
-                            read_query_impl(language, &mut *read_query_text)
+                            read_query_impl(language, &mut *read_query_text, chain)
                         )
                         .unwrap();
                         output
                     })
             })
-            .into_owned()
+            .into_owned();
+        chain.pop();
+        result
     }
-    read_query_impl(language, &mut read_query_text)
+    read_query_impl(language, &mut read_query_text, &mut Vec::new())
 }
 
 pub trait LanguageLoader {
@@ -86,5 +98,32 @@ where
 
     fn get_config(&self, lang: Language) -> Option<&LanguageConfig> {
         T::get_config(self, lang)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_query;
+
+    #[test]
+    fn read_query_breaks_inherits_cycle() {
+        // `a` inherits `b` and `b` inherits `a`: resolution must terminate rather than
+        // recurse until the stack overflows, and still include both queries' own patterns.
+        let result = read_query("a", |lang| match lang {
+            "a" => "; inherits: b\n(a_pattern) @a".to_string(),
+            "b" => "; inherits: a\n(b_pattern) @b".to_string(),
+            _ => String::new(),
+        });
+        assert!(result.contains("@a"), "missing a's own patterns: {result:?}");
+        assert!(result.contains("@b"), "missing b's own patterns: {result:?}");
+    }
+
+    #[test]
+    fn read_query_breaks_self_inherit() {
+        let result = read_query("a", |lang| match lang {
+            "a" => "; inherits: a\n(a_pattern) @a".to_string(),
+            _ => String::new(),
+        });
+        assert!(result.contains("@a"), "missing a's own patterns: {result:?}");
     }
 }
