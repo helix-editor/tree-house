@@ -226,7 +226,7 @@ where
     S: IterStrategy<'a, 'tree>,
     LayerState: Default,
 {
-    fn init_layer(&mut self, injection: Injection) -> Box<ActiveLayer<'a, 'tree, S, LayerState>> {
+    fn init_layer(&mut self, injection: &Injection) -> Box<ActiveLayer<'a, 'tree, S, LayerState>> {
         self.active_layers
             .remove(&injection.layer)
             .unwrap_or_else(|| {
@@ -311,7 +311,7 @@ where
             finished_layers: HashSet::with_capacity(8),
         });
         Self {
-            current_layer: layer_manager.init_layer(injection.clone()),
+            current_layer: layer_manager.init_layer(&injection),
             current_injection: injection,
             layer_manager,
         }
@@ -367,7 +367,7 @@ where
     }
 
     fn enter_injection(&mut self, injection: Injection) {
-        let active_layer = self.layer_manager.init_layer(injection.clone());
+        let active_layer = self.layer_manager.init_layer(&injection);
         let old_injection = replace(&mut self.current_injection, injection);
         let old_layer = replace(&mut self.current_layer, active_layer);
         self.layer_manager
