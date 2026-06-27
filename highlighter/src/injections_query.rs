@@ -103,11 +103,6 @@ impl InjectionsQuery {
         injection_query_text: &str,
         local_query_text: &str,
     ) -> Result<Self, query::ParseError> {
-        let mut query_source =
-            String::with_capacity(injection_query_text.len() + local_query_text.len());
-        query_source.push_str(injection_query_text);
-        query_source.push_str(local_query_text);
-
         let mut injection_properties: HashMap<Pattern, InjectionProperties> = HashMap::new();
         let mut not_scope_inherits = HashSet::new();
         let injection_query = Query::new(grammar, injection_query_text, |pattern, predicate| {
