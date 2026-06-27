@@ -30,7 +30,7 @@ fn is_fresh(grammar_dir: &Path, force: bool) -> Result<(Checksum, bool)> {
         let Some((_, extension)) = file_name.rsplit_once('.') else {
             continue;
         };
-        if matches!(extension, "h" | "c" | "cc") {
+        if !matches!(extension, "h" | "c" | "cc") {
             continue;
         }
         let path = file.path();
