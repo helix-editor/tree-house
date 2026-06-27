@@ -114,8 +114,14 @@ mod tests {
             "b" => "; inherits: a\n(b_pattern) @b".to_string(),
             _ => String::new(),
         });
-        assert!(result.contains("@a"), "missing a's own patterns: {result:?}");
-        assert!(result.contains("@b"), "missing b's own patterns: {result:?}");
+        assert!(
+            result.contains("@a"),
+            "missing a's own patterns: {result:?}"
+        );
+        assert!(
+            result.contains("@b"),
+            "missing b's own patterns: {result:?}"
+        );
     }
 
     #[test]
@@ -124,6 +130,9 @@ mod tests {
             "a" => "; inherits: a\n(a_pattern) @a".to_string(),
             _ => String::new(),
         });
-        assert!(result.contains("@a"), "missing a's own patterns: {result:?}");
+        assert!(
+            result.contains("@a"),
+            "missing a's own patterns: {result:?}"
+        );
     }
 }
