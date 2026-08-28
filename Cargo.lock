@@ -562,7 +562,6 @@ dependencies = [
  "hashbrown",
  "indexmap",
  "kstring",
- "once_cell",
  "pretty_assertions",
  "regex",
  "regex-cursor",
