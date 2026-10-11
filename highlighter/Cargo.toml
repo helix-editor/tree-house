@@ -36,8 +36,3 @@ version = "0.3"
 package = "tree-house-bindings"
 path = "../bindings"
 features = ["ropey"]
-
-[dependencies.once_cell]
-version = "1.19"
-default-features = false
-features = ["std", "alloc"]

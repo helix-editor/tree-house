@@ -5,8 +5,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use indexmap::{IndexMap, IndexSet};
-use once_cell::sync::Lazy;
-use once_cell::unsync::OnceCell;
+use std::sync::LazyLock;
+use std::cell::OnceCell;
 use skidder::Repo;
 use tree_sitter::{Grammar, InputEdit, Point};
 
@@ -18,7 +18,7 @@ use crate::{Language, Layer, Syntax};
 
 const PARSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
-static GRAMMARS: Lazy<Vec<PathBuf>> = Lazy::new(|| {
+static GRAMMARS: LazyLock<Vec<PathBuf>> = LazyLock::new(|| {
     let skidder_config = skidder_config();
     skidder::fetch(&skidder_config, false).unwrap();
     skidder::build_all_grammars(&skidder_config, false, None).unwrap();
@@ -252,7 +252,7 @@ fn layers() {
     let input = "/// Says hello.
 ///
 /// this is *markdown-inline* markdown
-/// 
+///
 /// # Example
 ///
 /// ```rust

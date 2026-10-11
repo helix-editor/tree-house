@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use hashbrown::{HashMap, HashSet};
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use regex_cursor::engines::meta::Regex;
 use ropey::RopeSlice;
 
@@ -20,7 +20,7 @@ use tree_sitter::{
 };
 
 const SHEBANG: &str = r"#!\s*(?:\S*[/\\](?:env\s+(?:\-\S+\s+)*)?)?([^\s\.\d]+)";
-static SHEBANG_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(SHEBANG).unwrap());
+static SHEBANG_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(SHEBANG).unwrap());
 
 #[derive(Clone, Default, Debug)]
 pub struct InjectionProperties {
