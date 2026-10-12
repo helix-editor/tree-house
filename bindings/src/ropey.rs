@@ -35,9 +35,9 @@ impl<'a> Input for RopeInput<'a> {
     fn cursor_at(&mut self, offset: u32) -> &mut RopeyCursor<'a> {
         let offset = offset as usize;
         debug_assert!(
-            offset <= self.src.len_bytes(),
+            offset <= self.src.len(),
             "parser offset out of bounds: {offset} > {}",
-            self.src.len_bytes()
+            self.src.len()
         );
         // this cursor is optimized for contiguous reads which are by far the most common during parsing
         // very far jumps (like injections at the other end of the document) are handled
@@ -57,10 +57,10 @@ impl<'a> Input for RopeInput<'a> {
     fn eq(&mut self, range1: ops::Range<u32>, range2: ops::Range<u32>) -> bool {
         let range1 = self
             .src
-            .byte_slice(range1.start as usize..range1.end as usize);
+            .slice(range1.start as usize..range1.end as usize);
         let range2 = self
             .src
-            .byte_slice(range2.start as usize..range2.end as usize);
+            .slice(range2.start as usize..range2.end as usize);
         range1 == range2
     }
 }
