@@ -10,3 +10,18 @@ Documentation is a work-in-progress and these crates may see breaking changes as
 * `highlighter/` contains the `tree-house` crate which exposes a robust highlighter and query iterator for working across [injections].
 * `skidder/` contains the `skidder` crate which exposes utilities for building a package repository for tree-sitter grammars.
 * `cli/` contains the `skidder-cli` crate which wraps `skidder` in a command line interface.
+
+## Injection source prefilters
+
+A query pattern can declare a necessary condition on the whole source with
+`(#set! injection.source-pattern "/[/*]")`. If every injection pattern has a
+prefilter and none matches, tree-house skips the injection query's tree traversal.
+Patterns without this property keep the usual behavior. The regular expression
+runs on the rope directly, including across chunk boundaries.
+
+The query author must ensure that the expression matches every source in which
+that pattern could produce an injection. Extra matches are safe: they only cause
+normal query execution. For example, JSON comment injections can require `/[/*]`
+because all JSON comments start with `//` or `/*`. This does not infer comments
+from text: when the prefilter matches, the syntax query still decides which text
+is a comment. Removing the last comment removes its injection normally.

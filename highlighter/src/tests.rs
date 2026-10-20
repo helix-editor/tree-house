@@ -5,9 +5,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use indexmap::{IndexMap, IndexSet};
-use std::sync::LazyLock;
-use std::cell::OnceCell;
 use skidder::Repo;
+use std::cell::OnceCell;
+use std::sync::LazyLock;
 use tree_sitter::{Grammar, InputEdit, Point};
 
 use crate::config::{LanguageConfig, LanguageLoader};
@@ -732,4 +732,131 @@ fn highlighter_ancestor_highlight_not_replaced_by_child_capture() {
         2,
         "both the decorator's @function and `B`'s @constant should be active"
     );
+}
+
+#[test]
+fn injection_source_pattern_preserves_comment_addition_and_removal() {
+    let mut loader = TestLanguageLoader::new();
+    loader.overwrite_injections(
+        "rust",
+        r#"((block_comment) @injection.content
+        (#set! injection.language "markdown")
+        (#set! injection.source-pattern "/[*]"))"#
+            .into(),
+    );
+    let plain = "fn main() {}";
+    let comment = "/* hello */fn main() {}";
+    let language = loader.get("rust");
+    let mut syntax = Syntax::new(plain.into(), language, PARSE_TIMEOUT, &loader).unwrap();
+    assert!(syntax
+        .layer(syntax.root())
+        .injection_at_byte_idx(2)
+        .is_none());
+    let prefix = (comment.len() - plain.len()) as u32;
+    let edit = InputEdit {
+        start_byte: 0,
+        old_end_byte: 0,
+        new_end_byte: prefix,
+        start_point: Point::ZERO,
+        old_end_point: Point::ZERO,
+        new_end_point: Point::ZERO,
+    };
+    syntax
+        .update(comment.into(), PARSE_TIMEOUT, &[edit], &loader)
+        .unwrap();
+    assert!(syntax
+        .layer(syntax.root())
+        .injection_at_byte_idx(2)
+        .is_some());
+    let edit = InputEdit {
+        old_end_byte: prefix,
+        new_end_byte: 0,
+        ..edit
+    };
+    syntax
+        .update(plain.into(), PARSE_TIMEOUT, &[edit], &loader)
+        .unwrap();
+    assert!(syntax
+        .layer(syntax.root())
+        .injection_at_byte_idx(2)
+        .is_none());
+}
+
+#[test]
+fn injection_source_pattern_does_not_skip_unguarded_patterns() {
+    let mut loader = TestLanguageLoader::new();
+    loader.overwrite_injections(
+        "rust",
+        r#"
+        ((block_comment) @injection.content
+          (#set! injection.language "markdown")
+          (#set! injection.source-pattern "/[*]"))
+        ((line_comment) @injection.content
+          (#set! injection.language "markdown"))
+    "#
+        .into(),
+    );
+    let syntax = Syntax::new(
+        "// hello".into(),
+        loader.get("rust"),
+        PARSE_TIMEOUT,
+        &loader,
+    )
+    .unwrap();
+    assert!(syntax
+        .layer(syntax.root())
+        .injection_at_byte_idx(3)
+        .is_some());
+}
+
+#[test]
+fn injection_source_pattern_rejects_invalid_regex() {
+    let loader = TestLanguageLoader::new();
+    let grammar = loader.get_config(loader.get("rust")).unwrap().grammar;
+    assert!(crate::injections_query::InjectionsQuery::new(
+        grammar,
+        r#"
+        ((block_comment) @injection.content
+          (#set! injection.language "markdown")
+          (#set! injection.source-pattern "["))
+    "#,
+        ""
+    )
+    .is_err());
+}
+
+#[test]
+fn injection_source_pattern_handles_rope_boundaries_and_false_positives() {
+    let mut loader = TestLanguageLoader::new();
+    loader.overwrite_injections(
+        "rust",
+        r#"((block_comment) @injection.content
+        (#set! injection.language "markdown")
+        (#set! injection.source-pattern "/[*]"))"#
+            .into(),
+    );
+    let language = loader.get("rust");
+    let empty = ropey::Rope::from(" ".repeat(10_000));
+    let boundary = empty.chunk_at_byte(0).0.len();
+    let mut bytes = vec![b' '; 10_000];
+    let start = boundary - 1;
+    bytes[start..start + 11].copy_from_slice(b"/* hello */");
+    let text = ropey::Rope::from(String::from_utf8(bytes).unwrap());
+    assert_ne!(text.chunk_at_byte(start).1, text.chunk_at_byte(start + 1).1);
+    let syntax = Syntax::new(text.slice(..), language, PARSE_TIMEOUT, &loader).unwrap();
+    assert!(syntax
+        .layer(syntax.root())
+        .injection_at_byte_idx(start as u32 + 3)
+        .is_some());
+    let syntax = Syntax::new(
+        "let s = \"/* not a comment */\";".into(),
+        language,
+        PARSE_TIMEOUT,
+        &loader,
+    )
+    .unwrap();
+    assert!(syntax
+        .layer(syntax.root())
+        .injection_at_byte_idx(12)
+        .is_none());
 }

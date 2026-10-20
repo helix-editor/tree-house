@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use hashbrown::{HashMap, HashSet};
-use std::sync::LazyLock;
 use regex_cursor::engines::meta::Regex;
 use ropey::RopeSlice;
+use std::sync::LazyLock;
 
 use crate::config::{LanguageConfig, LanguageLoader};
 use crate::highlighter::Highlight;
@@ -27,6 +27,7 @@ pub struct InjectionProperties {
     include_children: IncludedChildren,
     language: Option<Box<str>>,
     combined: bool,
+    source_pattern: Option<Regex>,
 }
 
 /// An indicator in the document or query source file which used by the loader to know which
@@ -134,6 +135,19 @@ impl InjectionsQuery {
                     key: "injection.combined",
                     val: None,
                 } => injection_properties.entry(pattern).or_default().combined = true,
+                // An optional necessary condition for this pattern to match.
+                // A failed prefilter avoids traversing the syntax tree at all.
+                UserPredicate::SetProperty {
+                    key: "injection.source-pattern",
+                    val: Some(pattern_source),
+                } => {
+                    let regex = Regex::new(pattern_source)
+                        .map_err(|error| InvalidPredicateError::from(error.to_string()))?;
+                    injection_properties
+                        .entry(pattern)
+                        .or_default()
+                        .source_pattern = Some(regex);
+                }
                 predicate => {
                     return Err(InvalidPredicateError::unknown(predicate));
                 }
@@ -285,10 +299,24 @@ impl InjectionsQuery {
         source: RopeSlice<'a>,
         loader: &'a impl LanguageLoader,
     ) -> impl Iterator<Item = InjectionQueryMatch<'a>> + 'a {
-        let mut cursor = InactiveQueryCursor::new(0..u32::MAX, TREE_SITTER_MATCH_LIMIT)
-            .execute_query(&self.injection_query, node, source);
+        // Every pattern must opt in; an unguarded pattern always requires
+        // normal query execution. False positives are harmless.
+        let skip = self.injection_query.patterns().all(|pattern| {
+            self.injection_properties
+                .get(&pattern)
+                .and_then(|properties| properties.source_pattern.as_ref())
+                .is_some_and(|regex| !regex.is_match(regex_cursor::Input::new(source)))
+        });
+        let mut cursor = (!skip).then(|| {
+            InactiveQueryCursor::new(0..u32::MAX, TREE_SITTER_MATCH_LIMIT).execute_query(
+                &self.injection_query,
+                node,
+                source,
+            )
+        });
         let injection_content_capture = self.injection_content_capture.unwrap();
         let iter = iter::from_fn(move || loop {
+            let cursor = cursor.as_mut()?;
             let (query_match, node_idx) = cursor.next_matched_node()?;
             if query_match.matched_node(node_idx).capture != injection_content_capture {
                 continue;
