@@ -5,9 +5,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use indexmap::{IndexMap, IndexSet};
-use std::sync::LazyLock;
-use std::cell::OnceCell;
 use skidder::Repo;
+use std::cell::OnceCell;
+use std::sync::LazyLock;
 use tree_sitter::{Grammar, InputEdit, Point};
 
 use crate::config::{LanguageConfig, LanguageLoader};
@@ -732,4 +732,103 @@ fn highlighter_ancestor_highlight_not_replaced_by_child_capture() {
         2,
         "both the decorator's @function and `B`'s @constant should be active"
     );
+}
+
+#[test]
+fn combined_layer_reuse_tracks_moves() {
+    let loader = TestLanguageLoader::new();
+    // Two html blocks around a markdown paragraph: one combined html layer
+    let before = "intro\n\n<!-- a -->\n\npara\n\n<!-- b -->\n";
+    let mut syntax = Syntax::new(
+        before.into(),
+        loader.get("markdown"),
+        PARSE_TIMEOUT,
+        &loader,
+    )
+    .unwrap();
+
+    // Block A moves one byte to the right while block B's offset nets out to zero.
+    // The reused layer's tree must still be moved.
+    let after = "intro!\n\n<!-- a -->\n\npra\n\n<!-- b -->\n";
+    let edits = [
+        InputEdit {
+            start_byte: 5,
+            old_end_byte: 5,
+            new_end_byte: 6,
+            start_point: Point::ZERO,
+            old_end_point: Point::ZERO,
+            new_end_point: Point::ZERO,
+        },
+        InputEdit {
+            start_byte: 20,
+            old_end_byte: 21,
+            new_end_byte: 20,
+            start_point: Point::ZERO,
+            old_end_point: Point::ZERO,
+            new_end_point: Point::ZERO,
+        },
+    ];
+    syntax
+        .update(after.into(), PARSE_TIMEOUT, &edits, &loader)
+        .unwrap();
+
+    let html = loader.get("html");
+    let layer = syntax
+        .layers_for_byte_range(9, 17)
+        .find(|&layer| syntax.layer(layer).language == html)
+        .expect("an html layer covers the first comment");
+    let root = syntax.layer(layer).tree().unwrap().root_node();
+    assert_eq!(
+        root.byte_range(),
+        8..36,
+        "the html layer's tree must span the comments' new positions"
+    );
+}
+
+#[test]
+fn combined_layer_reused_without_reparse() {
+    let loader = TestLanguageLoader::new();
+    let markdown = loader.get("markdown");
+    let html = loader.get("html");
+    // The edits leave blocks of the combined html layer unchanged
+    let t0 = "xx\n\n<!-- a -->\n\n<!-- b -->\n\nmore text\n";
+    let t1 = "xxy\n\n<!-- a -->\n\n<!-- b -->\n\nmorex text\n";
+    let mut syntax = Syntax::new(t0.into(), markdown, PARSE_TIMEOUT, &loader).unwrap();
+    let before = root_ids(&syntax);
+    syntax
+        .update(
+            t1.into(),
+            PARSE_TIMEOUT,
+            &[edit(2, 2, 3), edit(32, 32, 33)],
+            &loader,
+        )
+        .unwrap();
+    // The layer should be reused since it didn't change
+    let html_ids = |ids: Vec<(Language, usize)>| ids.into_iter().filter(|&(lang, _)| lang == html);
+    assert!(
+        html_ids(root_ids(&syntax)).eq(html_ids(before)),
+        "the html layer was re-parsed"
+    );
+}
+
+/// Each layer's root node id, which only changes when the layer is re-parsed.
+fn root_ids(syntax: &Syntax) -> Vec<(Language, usize)> {
+    syntax
+        .layers
+        .iter()
+        .filter_map(|(_, layer)| {
+            Some((layer.language, layer.parse_tree.as_ref()?.root_node().id()))
+        })
+        .collect()
+}
+
+fn edit(start_byte: u32, old_end_byte: u32, new_end_byte: u32) -> InputEdit {
+    InputEdit {
+        start_byte,
+        old_end_byte,
+        new_end_byte,
+        start_point: Point::ZERO,
+        old_end_point: Point::ZERO,
+        new_end_point: Point::ZERO,
+    }
 }

@@ -1,5 +1,5 @@
-use std::sync::LazyLock;
 use regex::Regex;
+use std::sync::LazyLock;
 use tree_sitter::{query, Grammar};
 
 use crate::highlighter::{Highlight, HighlightQuery};
