@@ -1104,3 +1104,51 @@ fn injection_at_range_seam() {
         "query iter emitted non-monotonic injection events:\n{fixture}"
     );
 }
+
+#[test]
+fn injection_crossing_range_seams() {
+    let loader = TestLanguageLoader::new();
+    let lang = loader.get("markdown");
+    // Adjacent html blocks are adjacent ranges of the combined html layer.
+    // The html comment opened at the end of the first block only closes in the last one.
+    let cases = [
+        (
+            "<!-- one --><!--\n<!-- two -->\n\n",
+            "   <!-- one --><!--
+// ┗━━━━━━━━━━━━━━┹─ html comment
+   <!-- two -->
+// ┡━━━━━━━━━━┛╰─ html
+// ╰─ html comment
+",
+            "   <!-- one --><!--
+// ┗━━━━━━━━━━━━━━┹─ comment
+   <!-- two -->
+// ┗━━━━━━━━━━┹─ comment
+",
+        ),
+        (
+            "<!-- one --><!--\n<script></script>\n<!-- two -->\n\n",
+            "   <!-- one --><!--
+// ┗━━━━━━━━━━━━━━┹─ html comment
+   <script></script>
+// ┗━━━━━━━━━━━━━━━┹─ html comment
+   <!-- two -->
+// ┡━━━━━━━━━━┛╰─ html
+// ╰─ html comment
+",
+            "   <!-- one --><!--
+// ┗━━━━━━━━━━━━━━┹─ comment
+   <script></script>
+// ┗━━━━━━━━━━━━━━━┹─ comment
+   <!-- two -->
+// ┗━━━━━━━━━━┹─ comment
+",
+        ),
+    ];
+    for (text, injections, highlights) in cases {
+        let syntax = Syntax::new(text.into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+        let (_, rendered_injections, rendered_highlights) = render(&loader, &syntax, text);
+        assert_eq!(rendered_injections.trim_end(), injections.trim_end());
+        assert_eq!(rendered_highlights.trim_end(), highlights.trim_end());
+    }
+}

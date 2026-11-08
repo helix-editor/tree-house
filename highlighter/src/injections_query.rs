@@ -761,19 +761,8 @@ fn intersect_ranges_impl(
     // Skip ranges that end before the start of range
     let parent_ranges = parent_ranges.skip_while(move |r| r.end <= range.start);
     // filter by the excluded ranges
-    let mut parent_ranges = exclude_ranges(parent_ranges, excluded_ranges).peekable();
+    let mut parent_ranges = exclude_ranges(parent_ranges, excluded_ranges);
     let mut next_parent_range = parent_ranges.next();
-    // Pre-merge any adjacent parent ranges before the first iteration so that the very first
-    // intersection is computed against the full merged span rather than just the first piece.
-    while let Some(ref mut current) = next_parent_range {
-        match parent_ranges.peek() {
-            Some(next) if next.start == current.end => {
-                current.end = next.end;
-                parent_ranges.next();
-            }
-            _ => break,
-        }
-    }
     from_fn(move || {
         loop {
             // If either range is exhausted, so is this iterator
@@ -789,28 +778,17 @@ fn intersect_ranges_impl(
                 range.start = parent_range.start;
             }
 
-            // Consume some or all of the range
+            // Consume some or all of the range. Adjacent parent ranges are not merged: they
+            // belong to different injections of the parent layer.
             let intersection = range.start..std::cmp::min(range.end, parent_range.end);
             range.start = intersection.end;
 
-            // Discard any parents that fully precede the new range, merging any adjacent ones
-            // into the replacement so the next intersection is computed against the full span.
-            while let Some(parent_range) = &next_parent_range {
-                if parent_range.end <= range.start {
-                    let mut next = parent_ranges.next();
-                    while let Some(ref mut current) = next {
-                        match parent_ranges.peek() {
-                            Some(n) if n.start == current.end => {
-                                current.end = n.end;
-                                parent_ranges.next();
-                            }
-                            _ => break,
-                        }
-                    }
-                    next_parent_range = next;
-                } else {
-                    break;
-                }
+            // Discard any parents that fully precede the new range
+            while next_parent_range
+                .as_ref()
+                .is_some_and(|parent_range| parent_range.end <= range.start)
+            {
+                next_parent_range = parent_ranges.next();
             }
 
             // Return the part of the range that was consumed
@@ -899,39 +877,13 @@ mod tests {
 
     #[test]
     fn intersect_ranges_impl_adjacent_parent_ranges() {
-        // Two adjacent parent ranges must be merged into one to avoid emitting adjacent
-        // injection ranges. The first range's adjacency to the second must be detected before
-        // computing the first intersection, not after yielding it.
+        // Adjacent parent ranges belong to different injections of the parent layer, so a child crossing the seam is split.
         let result: Vec<Range> =
             intersect_ranges_impl(0..100, [].into_iter(), [10..50, 50..80].into_iter()).collect();
-        assert_eq!(result, vec![10..80]);
-    }
-
-    #[test]
-    fn intersect_ranges_impl_three_adjacent_parent_ranges() {
-        // All three adjacent ranges must be collapsed into one.
+        assert_eq!(result, vec![10..50, 50..80]);
         let result: Vec<Range> =
-            intersect_ranges_impl(0..100, [].into_iter(), [10..30, 30..50, 50..80].into_iter())
+            intersect_ranges_impl(20..70, [].into_iter(), [10..30, 30..50, 50..80].into_iter())
                 .collect();
-        assert_eq!(result, vec![10..80]);
-    }
-
-    #[test]
-    fn intersect_ranges_impl_adjacent_then_gap() {
-        // First two adjacent, third separated: merge only the adjacent pair.
-        let result: Vec<Range> =
-            intersect_ranges_impl(0..100, [].into_iter(), [10..30, 30..50, 60..80].into_iter())
-                .collect();
-        assert_eq!(result, vec![10..50, 60..80]);
-    }
-
-    #[test]
-    fn intersect_ranges_impl_gap_then_adjacent() {
-        // Gap then adjacent: the post-discard merge in the existing code already handles this,
-        // but it should also be correct after the pre-merge fix.
-        let result: Vec<Range> =
-            intersect_ranges_impl(0..100, [].into_iter(), [10..30, 40..60, 60..80].into_iter())
-                .collect();
-        assert_eq!(result, vec![10..30, 40..80]);
+        assert_eq!(result, vec![20..30, 30..50, 50..70]);
     }
 }
