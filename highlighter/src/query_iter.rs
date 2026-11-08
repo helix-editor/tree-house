@@ -414,7 +414,7 @@ where
                 .current_layer
                 .injections
                 .peek()
-                .filter(|inj| inj.range.start <= self.current_injection.range.end);
+                .filter(|inj| inj.range.start < self.current_injection.range.end);
             let next_item = self
                 .current_layer
                 .layer_iter

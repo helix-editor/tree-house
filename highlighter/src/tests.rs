@@ -1084,3 +1084,23 @@ fn edit_sweep() {
         }
     }
 }
+
+#[test]
+fn injection_at_range_seam() {
+    let loader = TestLanguageLoader::new();
+    let lang = loader.get("markdown");
+    let text = "<!-- one -->\n\n```\nplain fence\n```\n\n<!-- o -->\n<!--x two -->\n\n";
+    let syntax = Syntax::new(text.into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+    let fixture = crate::fixtures::injections_fixture(
+        "// ",
+        &loader,
+        |lang| loader.languages.get_index(lang.idx()).unwrap().0.clone(),
+        &syntax,
+        text.into(),
+        ..,
+    );
+    assert!(
+        !fixture.contains("INVALID RANGE"),
+        "query iter emitted non-monotonic injection events:\n{fixture}"
+    );
+}
