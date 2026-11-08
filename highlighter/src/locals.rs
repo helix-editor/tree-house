@@ -66,6 +66,30 @@ impl Locals {
         None
     }
 
+    /// Maps all stored positions through `edits`. Edits must lie outside the layer's ranges
+    /// so that every position just shifts by the offsets of the edits before it.
+    pub(crate) fn map(&mut self, edits: &[tree_sitter::InputEdit]) {
+        let map_pos = |pos: u32| {
+            let mut offset = 0i32;
+            for edit in edits {
+                if edit.old_end_byte > pos {
+                    break;
+                }
+                offset += edit.offset();
+            }
+            (pos as i32 + offset) as u32
+        };
+        for scope in &mut self.scopes {
+            // The root scope covers `0..u32::MAX` rather than real positions.
+            if scope.range.end != u32::MAX {
+                scope.range = map_pos(scope.range.start)..map_pos(scope.range.end);
+            }
+            for definition in scope.definitions.values_mut() {
+                definition.range = map_pos(definition.range.start)..map_pos(definition.range.end);
+            }
+        }
+    }
+
     pub fn scope_cursor(&self, pos: u32) -> ScopeCursor<'_> {
         let mut scope = Scope::ROOT;
         let mut scope_stack = Vec::with_capacity(8);

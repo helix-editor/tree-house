@@ -5,7 +5,7 @@ use ropey::RopeSlice;
 use tree_sitter::Parser;
 
 use crate::config::LanguageLoader;
-use crate::{Error, LayerData, Syntax};
+use crate::{Error, Layer, LayerData, Syntax};
 
 impl Syntax {
     pub fn update(
@@ -38,6 +38,7 @@ impl Syntax {
                 // Skip re-parsing and querying layers without any ranges.
                 continue;
             }
+            let mut fresh = false;
             if let Some(tree) = &mut layer_data.parse_tree {
                 if layer_data.flags.moved || layer_data.flags.modified {
                     for edit in edits.iter().rev() {
@@ -54,9 +55,14 @@ impl Syntax {
             } else {
                 // always parse if this layer has never been parsed before
                 layer_data.parse(&mut parser, source, timeout, loader)?;
+                fresh = true;
             }
-            self.run_injection_query(layer, edits, source, loader, |layer| queue.push(layer));
-            self.run_local_query(layer, source, loader);
+            if fresh || self.layer(layer).flags.modified {
+                self.run_injection_query(layer, edits, source, loader, |layer| queue.push(layer));
+                self.run_local_query(layer, source, loader);
+            } else {
+                self.map_unmodified_layer(layer, edits, |layer| queue.push(layer));
+            }
         }
 
         if self.layer(self.root).parse_tree.is_none() {
@@ -71,6 +77,38 @@ impl Syntax {
     fn prune_dead_layers(&mut self) {
         self.layers
             .retain(|_, layer| take(&mut layer.flags).touched);
+    }
+
+    /// Carries a layer without edits inside its ranges over without re-running its injection
+    /// and locals queries: contents only shift by the offsets of the edits before them.
+    fn map_unmodified_layer(
+        &mut self,
+        layer: Layer,
+        edits: &[tree_sitter::InputEdit],
+        mut parse_layer: impl FnMut(Layer),
+    ) {
+        // Children of an unmodified layer can only have moved.
+        self.map_injections(layer, None, edits);
+        let layer_data = self.layer_mut(layer);
+        if layer_data.flags.moved {
+            layer_data.locals.map(edits);
+        }
+        let injections = take(&mut self.layer_mut(layer).injections);
+        for injection in &injections {
+            let child = self.layer_mut(injection.layer);
+            if !child.flags.touched {
+                child.flags.touched = true;
+                child.ranges.clear();
+                parse_layer(injection.layer);
+            }
+            child.ranges.push(tree_sitter::Range::new(
+                tree_sitter::Point::ZERO,
+                tree_sitter::Point::ZERO,
+                injection.range.start,
+                injection.range.end,
+            ));
+        }
+        self.layer_mut(layer).injections = injections;
     }
 }
 

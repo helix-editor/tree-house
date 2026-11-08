@@ -832,3 +832,255 @@ fn edit(start_byte: u32, old_end_byte: u32, new_end_byte: u32) -> InputEdit {
         new_end_point: Point::ZERO,
     }
 }
+
+/// Oracle for incremental updates: the updated syntax must have the same layers,
+/// injections and highlights as a fresh parse of `text`.
+#[track_caller]
+fn assert_matches_fresh(loader: &TestLanguageLoader, lang: Language, syntax: &Syntax, text: &str) {
+    let fresh = Syntax::new(text.into(), lang, PARSE_TIMEOUT, loader).unwrap();
+    let [incremental, fresh] = [syntax, &fresh].map(|syntax| render(loader, syntax, text));
+    assert_eq!(
+        incremental.0, fresh.0,
+        "layers diverged from a fresh parse of {text:?}"
+    );
+    assert_eq!(
+        incremental.1, fresh.1,
+        "injections diverged from a fresh parse of {text:?}"
+    );
+    assert_eq!(
+        incremental.2, fresh.2,
+        "highlights diverged from a fresh parse of {text:?}"
+    );
+}
+
+/// The layers, injections and highlights of `syntax`.
+fn render(
+    loader: &TestLanguageLoader,
+    syntax: &Syntax,
+    text: &str,
+) -> (Vec<String>, String, String) {
+    use crate::fixtures::{highlighter_fixture, injections_fixture};
+    let lang_name = |lang: Language| loader.languages.get_index(lang.idx()).unwrap().0.clone();
+    let mut layers: Vec<String> = syntax
+        .layers
+        .iter()
+        .map(|(_, layer)| {
+            let ranges: Vec<_> = layer
+                .ranges
+                .iter()
+                .map(|r| r.start_byte..r.end_byte)
+                .collect();
+            format!("{} {ranges:?}", lang_name(layer.language))
+        })
+        .collect();
+    layers.sort();
+    let highlight_name = |highlight: Highlight| loader.test_theme.borrow()[highlight.idx()].clone();
+    (
+        layers,
+        injections_fixture("// ", loader, lang_name, syntax, text.into(), ..),
+        highlighter_fixture("// ", loader, highlight_name, syntax, text.into(), ..),
+    )
+}
+
+/// A markdown document with multiple nested layers
+const LAYERED_DOC: &str = "\
+# Title
+
+```rust
+fn foo(alpha: u32) -> u32 {
+    alpha + 1
+}
+```
+
+middle text
+
+```rust
+fn bar(beta: u32) -> u32 {
+    beta * 2
+}
+```
+
+<!-- a -->
+
+<!-- b -->
+";
+
+#[test]
+fn unmodified_layers_edit_between_fences() {
+    let loader = TestLanguageLoader::new();
+    let lang = loader.get("markdown");
+    let mut syntax = Syntax::new(LAYERED_DOC.into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+    // Insert into "middle text". The first fence is untouched. The second fence and the html
+    // layer only move.
+    let pos = LAYERED_DOC.find("middle").unwrap() as u32;
+    let after = LAYERED_DOC.replace("middle", "muddled");
+    syntax
+        .update(
+            after.as_str().into(),
+            PARSE_TIMEOUT,
+            &[edit(pos, pos + 6, pos + 7)],
+            &loader,
+        )
+        .unwrap();
+    assert_matches_fresh(&loader, lang, &syntax, &after);
+}
+
+#[test]
+fn unmodified_layers_net_zero_edit() {
+    let loader = TestLanguageLoader::new();
+    let lang = loader.get("markdown");
+    let mut syntax = Syntax::new(LAYERED_DOC.into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+    // One transaction: grow the title by one byte and shrink the paragraph by one. The
+    // first fence moves right by one, everything after the paragraph nets out to zero.
+    let title = LAYERED_DOC.find("Title").unwrap() as u32;
+    let text = LAYERED_DOC.find("text").unwrap() as u32;
+    let after = LAYERED_DOC
+        .replace("Title", "Titles")
+        .replace("text", "ext");
+    syntax
+        .update(
+            after.as_str().into(),
+            PARSE_TIMEOUT,
+            &[
+                edit(title + 5, title + 5, title + 6),
+                edit(text, text + 1, text),
+            ],
+            &loader,
+        )
+        .unwrap();
+    assert_matches_fresh(&loader, lang, &syntax, &after);
+}
+
+#[test]
+fn unmodified_layers_sibling_edit() {
+    let loader = TestLanguageLoader::new();
+    let lang = loader.get("markdown");
+    let mut syntax = Syntax::new(LAYERED_DOC.into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+    // Edit inside the first fence (that layer re-parses and rebuilds its locals).
+    // the second fence and the html layer are skipped.
+    let pos = LAYERED_DOC.find("alpha + 1").unwrap() as u32;
+    let after = LAYERED_DOC.replace("alpha + 1", "alpha + 12");
+    syntax
+        .update(
+            after.as_str().into(),
+            PARSE_TIMEOUT,
+            &[edit(pos + 9, pos + 9, pos + 10)],
+            &loader,
+        )
+        .unwrap();
+    assert_matches_fresh(&loader, lang, &syntax, &after);
+}
+
+#[test]
+fn unmodified_layers_new_fence() {
+    let loader = TestLanguageLoader::new();
+    let lang = loader.get("markdown");
+    let mut syntax = Syntax::new(LAYERED_DOC.into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+    // Insert a new fence into the paragraph: the root restructures around it and a
+    // new rust layer appears while the surrounding fences are reused.
+    let pos = LAYERED_DOC.find("middle text\n").unwrap() as u32 + 12;
+    let insertion = "\n```rust\nfn baz() {}\n```\n";
+    let mut after = LAYERED_DOC.to_owned();
+    after.insert_str(pos as usize, insertion);
+    syntax
+        .update(
+            after.as_str().into(),
+            PARSE_TIMEOUT,
+            &[edit(pos, pos, pos + insertion.len() as u32)],
+            &loader,
+        )
+        .unwrap();
+    assert_matches_fresh(&loader, lang, &syntax, &after);
+}
+
+/// Deterministic PRNG so the sweep below is reproducible.
+struct Lcg(u64);
+
+impl Lcg {
+    fn next(&mut self, bound: usize) -> usize {
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((self.0 >> 33) as usize) % bound.max(1)
+    }
+}
+
+/// Randomized equivalence sweep
+#[test]
+fn edit_sweep() {
+    let loader = TestLanguageLoader::new();
+    let lang = loader.get("markdown");
+    let mut rng = Lcg(0xC0FFEE);
+    const BLOCKS: &[&str] = &[
+        "plain paragraph text\n",
+        "# heading\n",
+        "```rust\nfn foo(alpha: u32) -> u32 {\n    alpha + 1\n}\n```\n",
+        "```rust\nlet beta = 1;\n```\n",
+        "<!-- one -->\n",
+        "<!-- two -->\n",
+        "```\nplain fence\n```\n",
+    ];
+    for doc_idx in 0..25 {
+        let mut text = String::new();
+        for _ in 0..3 + rng.next(4) {
+            text.push_str(BLOCKS[rng.next(BLOCKS.len())]);
+            text.push('\n');
+        }
+        let mut syntax = Syntax::new(text.as_str().into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+        for round in 0..4 {
+            // Generate 1-3 non-overlapping ascending edits in old-text coordinates.
+            let mut edits = Vec::new();
+            let mut after = text.clone();
+            let mut pos = 0usize;
+            let mut delta = 0i64;
+            for _ in 0..1 + rng.next(3) {
+                if pos + 8 >= text.len() {
+                    break;
+                }
+                let start = pos + rng.next(text.len() - pos - 4);
+                let new_pos = |p: usize, delta: i64| (p as i64 + delta) as usize;
+                match rng.next(3) {
+                    // insert 1-3 chars
+                    0 => {
+                        let ins = &"xyzq"[..1 + rng.next(3)];
+                        after.insert_str(new_pos(start, delta), ins);
+                        edits.push(edit(start as u32, start as u32, (start + ins.len()) as u32));
+                        delta += ins.len() as i64;
+                        pos = start + 4;
+                    }
+                    // delete 1-2 bytes
+                    1 => {
+                        let len = 1 + rng.next(2).min(text.len() - start - 1);
+                        after.replace_range(new_pos(start, delta)..new_pos(start + len, delta), "");
+                        edits.push(edit(start as u32, (start + len) as u32, start as u32));
+                        delta -= len as i64;
+                        pos = start + len + 4;
+                    }
+                    // replace 1-2 bytes with 1-3 chars
+                    _ => {
+                        let len = 1 + rng.next(2).min(text.len() - start - 1);
+                        let ins = &"qwer"[..1 + rng.next(3)];
+                        after
+                            .replace_range(new_pos(start, delta)..new_pos(start + len, delta), ins);
+                        edits.push(edit(
+                            start as u32,
+                            (start + len) as u32,
+                            (start + ins.len()) as u32,
+                        ));
+                        delta += ins.len() as i64 - len as i64;
+                        pos = start + len + 4;
+                    }
+                }
+            }
+            if edits.is_empty() {
+                continue;
+            }
+            syntax
+                .update(after.as_str().into(), PARSE_TIMEOUT, &edits, &loader)
+                .unwrap_or_else(|err| panic!("doc {doc_idx} round {round}: {err}"));
+            assert_matches_fresh(&loader, lang, &syntax, &after);
+            text = after;
+        }
+    }
+}

@@ -497,7 +497,7 @@ impl Syntax {
     }
 
     /// Maps the layers injection ranges through edits to enable incremental re-parsing.
-    fn map_injections(
+    pub(crate) fn map_injections(
         &mut self,
         layer: Layer,
         // TODO: drop this parameter?
