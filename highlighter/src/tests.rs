@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use indexmap::{IndexMap, IndexSet};
 use skidder::Repo;
 use std::cell::OnceCell;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::LazyLock;
 use tree_sitter::{Grammar, InputEdit, Point};
 
@@ -14,7 +15,7 @@ use crate::config::{LanguageConfig, LanguageLoader};
 use crate::fixtures::{check_highlighter_fixture, check_injection_fixture};
 use crate::highlighter::{Highlight, HighlightEvent, Highlighter};
 use crate::injections_query::{EditMap, InjectionLanguageMarker};
-use crate::{Language, Layer, LayerData, Syntax};
+use crate::{Error, Language, Layer, LayerData, Syntax};
 
 const PARSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -905,7 +906,7 @@ fn update_matches_fresh(
     for edits in batches {
         syntax.edit(edits);
     }
-    match syntax.parse(text.into(), PARSE_TIMEOUT, loader) {
+    match syntax.parse(text.into(), PARSE_TIMEOUT, None, loader) {
         Ok(()) => {}
         // Slow machines (valgrind) may time out, start over from a fresh parse.
         Err(crate::Error::Timeout) => {
@@ -2291,7 +2292,54 @@ fn edit_twice_then_parse() {
     let (text2, edits2) = insert_after(&text1, &["<!-- b -->"]);
     syntax.edit(&edits2);
     syntax
-        .parse(text2.as_str().into(), PARSE_TIMEOUT, &loader)
+        .parse(text2.as_str().into(), PARSE_TIMEOUT, None, &loader)
         .unwrap();
     assert_matches_fresh(&loader, lang, &syntax, &text2);
+}
+
+/// Sets `cancel` when a parse asks for the config of `language`.
+struct CancelAt<'a> {
+    loader: &'a TestLanguageLoader,
+    language: Language,
+    cancel: &'a AtomicBool,
+}
+
+impl LanguageLoader for CancelAt<'_> {
+    fn language_for_marker(&self, marker: InjectionLanguageMarker) -> Option<Language> {
+        self.loader.language_for_marker(marker)
+    }
+
+    fn get_config(&self, lang: Language) -> Option<&LanguageConfig> {
+        if lang == self.language {
+            self.cancel.store(true, Ordering::Relaxed);
+        }
+        self.loader.get_config(lang)
+    }
+}
+
+#[test]
+fn parse_after_cancel() {
+    let loader = TestLanguageLoader::new();
+    let lang = loader.get("markdown");
+    let mut syntax = Syntax::new(LAYERED_DOC.into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+    let (text, edits) = insert_after(LAYERED_DOC, &["# ", "alpha + 1", "<!-- b -->"]);
+    syntax.edit(&edits);
+    // Cancel once the root has been parsed and queried.
+    let cancel = AtomicBool::new(false);
+    let cancel_at = CancelAt {
+        loader: &loader,
+        language: loader.get("rust"),
+        cancel: &cancel,
+    };
+    let result = syntax.parse(
+        text.as_str().into(),
+        PARSE_TIMEOUT,
+        Some(&cancel),
+        &cancel_at,
+    );
+    assert_eq!(result, Err(Error::Cancelled));
+    syntax
+        .parse(text.as_str().into(), PARSE_TIMEOUT, None, &loader)
+        .unwrap();
+    assert_matches_fresh(&loader, lang, &syntax, &text);
 }

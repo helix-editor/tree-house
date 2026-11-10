@@ -120,7 +120,7 @@ impl Syntax {
             edited: Vec::new(),
         };
 
-        syntax.parse(source, timeout, loader).map(|_| syntax)
+        syntax.parse(source, timeout, None, loader).map(|_| syntax)
     }
 
     pub fn layer(&self, layer: Layer) -> &LayerData {
@@ -290,6 +290,7 @@ impl LayerData {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
     Timeout,
+    Cancelled,
     ExceededMaximumSize,
     InvalidRanges,
     Unknown,
@@ -301,6 +302,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Timeout => f.write_str("configured timeout was exceeded"),
+            Self::Cancelled => f.write_str("parsing was cancelled"),
             Self::ExceededMaximumSize => f.write_str("input text exceeds the maximum allowed size"),
             Self::InvalidRanges => f.write_str("invalid ranges"),
             Self::Unknown => f.write_str("an unknown error occurred"),

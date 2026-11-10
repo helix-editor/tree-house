@@ -1,8 +1,10 @@
 use std::mem::take;
-use std::time::Duration;
+use std::ops::ControlFlow;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use ropey::RopeSlice;
-use tree_sitter::{Parser, Tree};
+use tree_sitter::{ParseOptions, Parser, Tree};
 
 use crate::config::LanguageLoader;
 use crate::injections_query::{merge_spans, EditMap};
@@ -18,7 +20,7 @@ impl Syntax {
         loader: &impl LanguageLoader,
     ) -> Result<(), Error> {
         self.edit(edits);
-        self.parse(source, timeout, loader)
+        self.parse(source, timeout, None, loader)
     }
 
     /// Applies `edits` to every layer without parsing, so the syntax stays usable for
@@ -68,12 +70,14 @@ impl Syntax {
         self.edited = merge_regions(edited);
     }
 
-    /// Re-parses the layers that the edits since the last successful parse touched, and
-    /// re-runs their queries.
+    /// Re-parses the layers touched by edits since the last successful parse, and re-runs
+    /// their queries. Stops with [`Error::Cancelled`] once `cancel` is set. A parse
+    /// that failed can be run again.
     pub fn parse(
         &mut self,
         source: RopeSlice,
         timeout: Duration,
+        cancel: Option<&AtomicBool>,
         loader: &impl LanguageLoader,
     ) -> Result<(), Error> {
         // size limit of 512MiB, TS just cannot handle files this big (too
@@ -103,6 +107,9 @@ impl Syntax {
         );
 
         while let Some(layer) = queue.pop() {
+            if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) {
+                return Err(Error::Cancelled);
+            }
             let layer_data = self.layer_mut(layer);
             if layer_data.ranges.is_empty() {
                 // Skip re-parsing and querying layers without any ranges.
@@ -122,7 +129,7 @@ impl Syntax {
                 // Text edits can change a match without changing the structure (e.g. renaming
                 // an injected language), so the edits count as changed regions too.
                 layer_data
-                    .parse(&mut parser, source, timeout, loader)?
+                    .parse(&mut parser, source, timeout, cancel, loader)?
                     .map(|mut spans| {
                         spans.extend_from_slice(&edit_spans);
                         merge_spans(spans)
@@ -174,6 +181,7 @@ impl LayerData {
         parser: &mut Parser,
         source: RopeSlice,
         timeout: Duration,
+        cancel: Option<&AtomicBool>,
         loader: &impl LanguageLoader,
     ) -> Result<Option<Vec<Range>>, Error> {
         let Some(config) = loader.get_config(self.language) else {
@@ -194,9 +202,24 @@ impl LayerData {
             .as_ref()
             .filter(|tree| tree_has_ranges(tree, &self.ranges));
 
-        let new_tree = parser
-            .parse_with_timeout(source, tree, timeout)
-            .ok_or(Error::Timeout)?;
+        let deadline = Instant::now() + timeout;
+        let mut cancelled = false;
+        let mut progress = |_: &_| {
+            cancelled = cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed));
+            if cancelled || Instant::now() >= deadline {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        };
+        let new_tree = parser.parse_with_options(source, tree, ParseOptions::new(&mut progress));
+        let Some(new_tree) = new_tree else {
+            return Err(if cancelled {
+                Error::Cancelled
+            } else {
+                Error::Timeout
+            });
+        };
         let changed = tree.map(|old_tree| {
             old_tree
                 .changed_ranges(&new_tree)
