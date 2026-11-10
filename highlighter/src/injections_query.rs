@@ -613,13 +613,11 @@ impl Syntax {
     pub(crate) fn run_injection_query(
         &mut self,
         layer: Layer,
-        map: &EditMap,
         source: RopeSlice<'_>,
         loader: &impl LanguageLoader,
         mut parse_layer: impl FnMut(Layer),
         spans: Option<Vec<Range>>,
     ) {
-        self.map_injections(layer, map);
         let layer_data = &mut self.layer_mut(layer);
         let Some(LanguageConfig {
             injection_query: ref injections_query,
@@ -782,22 +780,33 @@ impl Syntax {
     /// Rebuilds the included ranges of the layer's children from its injections and queues
     /// children that haven't been visited yet.
     fn update_children(&mut self, layer: Layer, parse_layer: &mut impl FnMut(Layer)) {
+        self.set_child_ranges(layer);
+        let injections = take(&mut self.layer_mut(layer).injections);
+        for injection in &injections {
+            let flags = &mut self.layer_mut(injection.layer).flags;
+            if !flags.touched {
+                flags.touched = true;
+                parse_layer(injection.layer);
+            }
+        }
+        self.layer_mut(layer).injections = injections;
+    }
+
+    /// Rebuilds the included ranges of the layer's children from its injections.
+    pub(crate) fn set_child_ranges(&mut self, layer: Layer) {
         let injections = take(&mut self.layer_mut(layer).injections);
         for injection in &injections {
             self.layer_mut(injection.layer).ranges.clear();
         }
         for injection in &injections {
-            let child = self.layer_mut(injection.layer);
-            child.ranges.push(tree_sitter::Range::new(
-                tree_sitter::Point::ZERO,
-                tree_sitter::Point::ZERO,
-                injection.range.start,
-                injection.range.end,
-            ));
-            if !child.flags.touched {
-                child.flags.touched = true;
-                parse_layer(injection.layer);
-            }
+            self.layer_mut(injection.layer)
+                .ranges
+                .push(tree_sitter::Range::new(
+                    tree_sitter::Point::ZERO,
+                    tree_sitter::Point::ZERO,
+                    injection.range.start,
+                    injection.range.end,
+                ));
         }
         self.layer_mut(layer).injections = injections;
     }

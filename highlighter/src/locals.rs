@@ -96,8 +96,8 @@ impl Locals {
         None
     }
 
-    /// Maps all stored positions through `map`. Edits must lie outside the layer's ranges
-    /// so that every position just shifts.
+    /// Maps all stored positions through `map`. If an edit touches the layer, the scopes are
+    /// only approximate until the next parse rebuilds them.
     pub(crate) fn map(&mut self, map: &EditMap) {
         let map_pos = |pos: u32| map.down(pos);
         for scope in &mut self.scopes {
@@ -110,8 +110,8 @@ impl Locals {
             }
         }
         for capture in self.captures.iter_mut().flatten() {
-            capture.range = map_pos(capture.range.start)..map_pos(capture.range.end);
-            capture.extent = map_pos(capture.extent.start)..map_pos(capture.extent.end);
+            capture.range = map.down(capture.range.start)..map.up(capture.range.end);
+            capture.extent = map.down(capture.extent.start)..map.up(capture.extent.end);
         }
     }
 
@@ -254,7 +254,6 @@ impl Syntax {
     pub(crate) fn run_local_query(
         &mut self,
         layer: Layer,
-        map: &EditMap,
         source: RopeSlice<'_>,
         loader: &impl LanguageLoader,
         spans: Option<Vec<Range>>,
@@ -281,11 +280,7 @@ impl Syntax {
         let query = &injection_query.local_query;
         let depths = &injection_query.local_capture_depths;
         let captures = match (spans, old) {
-            (Some(mut spans), Some(mut old)) => {
-                for capture in &mut old {
-                    capture.range = map.down(capture.range.start)..map.up(capture.range.end);
-                    capture.extent = map.down(capture.extent.start)..map.up(capture.extent.end);
-                }
+            (Some(mut spans), Some(old)) => {
                 let mut anchors = Vec::new();
                 let new = loop {
                     let old_extents = old.iter().map(|capture| &capture.extent);

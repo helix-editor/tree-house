@@ -13,7 +13,7 @@ use tree_sitter::{Grammar, InputEdit, Point};
 use crate::config::{LanguageConfig, LanguageLoader};
 use crate::fixtures::{check_highlighter_fixture, check_injection_fixture};
 use crate::highlighter::{Highlight, HighlightEvent, Highlighter};
-use crate::injections_query::InjectionLanguageMarker;
+use crate::injections_query::{EditMap, InjectionLanguageMarker};
 use crate::{Language, Layer, LayerData, Syntax};
 
 const PARSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
@@ -890,19 +890,22 @@ fn render(
     )
 }
 
-/// Applies `edits` to `syntax` and checks the result against a fresh parse, like
-/// [`assert_matches_fresh`] but also comparing the layers' trees.
+/// Applies each batch of edits with [`Syntax::edit`], parses, and checks the result against a
+/// fresh parse, like [`assert_matches_fresh`] but also comparing the layers' trees.
 #[track_caller]
 fn update_matches_fresh(
     loader: &TestLanguageLoader,
     lang: Language,
     syntax: &mut Syntax,
-    edits: &[InputEdit],
+    batches: &[&[InputEdit]],
     text: &str,
     diverged: &mut usize,
 ) {
     let before = syntax.clone();
-    match syntax.update(text.into(), PARSE_TIMEOUT, edits, loader) {
+    for edits in batches {
+        syntax.edit(edits);
+    }
+    match syntax.parse(text.into(), PARSE_TIMEOUT, loader) {
         Ok(()) => {}
         // Slow machines (valgrind) may time out, start over from a fresh parse.
         Err(crate::Error::Timeout) => {
@@ -918,7 +921,7 @@ fn update_matches_fresh(
     if trees_match && render(loader, syntax, text) == render(loader, &fresh, text) {
         return;
     }
-    if !tree_sitter_diverged(loader, &before, edits, syntax, &fresh, text) {
+    if !tree_sitter_diverged(loader, &before, batches, syntax, &fresh, text) {
         assert_matches_fresh(loader, lang, syntax, text);
         panic!("layer trees diverged from a fresh parse of {text:?}");
     }
@@ -953,7 +956,7 @@ fn tree_sexp(tree: &tree_sitter::Tree) -> String {
 fn tree_sitter_diverged(
     loader: &TestLanguageLoader,
     before: &Syntax,
-    edits: &[InputEdit],
+    batches: &[&[InputEdit]],
     syntax: &Syntax,
     fresh: &Syntax,
     text: &str,
@@ -973,8 +976,10 @@ fn tree_sitter_diverged(
         let Some(mut old_tree) = old.tree().cloned() else {
             return false;
         };
-        for edit in edits.iter().rev() {
-            old_tree.edit(edit);
+        for edits in batches {
+            for edit in edits.iter().rev() {
+                old_tree.edit(edit);
+            }
         }
         // Only an old tree parsed under the same ranges can seed the re-parse.
         let old_ranges = old_tree.included_ranges();
@@ -988,11 +993,24 @@ fn tree_sitter_diverged(
         }
         // A layer no edit touched keeps its old tree. Error recovery can parse the same text
         // differently at another offset, so that tree may differ from a fresh parse.
-        let untouched = old.ranges.iter().all(|range| {
-            edits.iter().all(|edit| {
-                edit.old_end_byte < range.start_byte || edit.start_byte > range.end_byte
-            })
-        });
+        let mut ranges: Vec<_> = old
+            .ranges
+            .iter()
+            .map(|r| r.start_byte..r.end_byte)
+            .collect();
+        let mut untouched = true;
+        for edits in batches {
+            untouched &= ranges.iter().all(|range| {
+                edits
+                    .iter()
+                    .all(|edit| edit.old_end_byte < range.start || edit.start_byte > range.end)
+            });
+            let map = EditMap::new(edits);
+            ranges = ranges
+                .iter()
+                .map(|range| map.down(range.start)..map.up(range.end))
+                .collect();
+        }
         if !untouched || tree_sexp(&old_tree) != incremental {
             let mut parser = tree_sitter::Parser::new();
             parser
@@ -1229,7 +1247,7 @@ fn edit_sweep() {
             if edits.is_empty() {
                 continue;
             }
-            update_matches_fresh(&loader, lang, &mut syntax, &edits, &after, &mut diverged);
+            update_matches_fresh(&loader, lang, &mut syntax, &[&edits], &after, &mut diverged);
             text = after;
         }
     }
@@ -1558,7 +1576,7 @@ fn rust_edit_sweep() {
             } else {
                 continue;
             };
-            update_matches_fresh(&loader, lang, &mut syntax, &[e], &after, &mut diverged);
+            update_matches_fresh(&loader, lang, &mut syntax, &[&[e]], &after, &mut diverged);
             text = after;
         }
     }
@@ -2041,7 +2059,8 @@ fn sweep_multi_edits(
             }
             let mut syntax =
                 Syntax::new(text.as_str().into(), lang, PARSE_TIMEOUT, &loader).unwrap();
-            for _ in 0..8 {
+            let mut pending = Vec::new();
+            for step in 0..8 {
                 // Ascending, non-overlapping edits in old-text coordinates.
                 let mut edits = Vec::new();
                 let mut after = String::new();
@@ -2086,8 +2105,15 @@ fn sweep_multi_edits(
                     continue;
                 }
                 after.push_str(&text[copied..]);
-                update_matches_fresh(&loader, lang, &mut syntax, &edits, &after, &mut diverged);
+                pending.push(edits);
                 text = after;
+                // Sometimes edit twice before parsing, like an editor parsing in the background.
+                if step < 7 && rng.next(4) == 0 {
+                    continue;
+                }
+                let batches: Vec<&[InputEdit]> = pending.iter().map(Vec::as_slice).collect();
+                update_matches_fresh(&loader, lang, &mut syntax, &batches, &text, &mut diverged);
+                pending.clear();
             }
         }
     }
@@ -2229,4 +2255,43 @@ fn child_injection_at_range_seam() {
     let events = QueryIter::<_, ()>::new(&syntax, rope.slice(..), |_| Some(&query), 0u32..);
     let offsets: Vec<u32> = events.map(|event| event.start_byte()).collect();
     assert!(offsets.is_sorted(), "events went backwards: {offsets:?}");
+}
+
+/// Inserts an `x` after the first occurrence of each anchor, returning the new text and edits.
+fn insert_after(text: &str, anchors: &[&str]) -> (String, Vec<InputEdit>) {
+    let mut new_text = text.to_string();
+    let mut edits = Vec::new();
+    for (inserted, anchor) in anchors.iter().enumerate() {
+        let pos = (text.find(anchor).unwrap() + anchor.len()) as u32;
+        edits.push(edit(pos, pos, pos + 1));
+        new_text.insert(pos as usize + inserted, 'x');
+    }
+    (new_text, edits)
+}
+
+#[test]
+fn edit_without_parse() {
+    let loader = TestLanguageLoader::new();
+    let lang = loader.get("markdown");
+    let mut syntax = Syntax::new(LAYERED_DOC.into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+    // These edits don't change the structure, so only the positions are moved.
+    let (text, edits) = insert_after(LAYERED_DOC, &["Tit", "midd", "<!-- a"]);
+    syntax.edit(&edits);
+    assert_matches_fresh(&loader, lang, &syntax, &text);
+}
+
+#[test]
+fn edit_twice_then_parse() {
+    let loader = TestLanguageLoader::new();
+    let lang = loader.get("markdown");
+    let mut syntax = Syntax::new(LAYERED_DOC.into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+    // Edits that change the structure of several layers.
+    let (text1, edits1) = insert_after(LAYERED_DOC, &["# ", "alpha + 1"]);
+    syntax.edit(&edits1);
+    let (text2, edits2) = insert_after(&text1, &["<!-- b -->"]);
+    syntax.edit(&edits2);
+    syntax
+        .parse(text2.as_str().into(), PARSE_TIMEOUT, &loader)
+        .unwrap();
+    assert_matches_fresh(&loader, lang, &syntax, &text2);
 }

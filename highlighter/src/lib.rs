@@ -86,6 +86,8 @@ impl Language {
 pub struct Syntax {
     layers: Slab<LayerData>,
     root: Layer,
+    /// The regions changed by [`Syntax::edit`] since the last successful parse.
+    edited: Vec<Range>,
 }
 
 impl Syntax {
@@ -115,9 +117,10 @@ impl Syntax {
         let mut syntax = Self {
             root: Layer(root as u32),
             layers,
+            edited: Vec::new(),
         };
 
-        syntax.update(source, timeout, &[], loader).map(|_| syntax)
+        syntax.parse(source, timeout, loader).map(|_| syntax)
     }
 
     pub fn layer(&self, layer: Layer) -> &LayerData {

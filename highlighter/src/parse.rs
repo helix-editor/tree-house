@@ -6,14 +6,74 @@ use tree_sitter::{Parser, Tree};
 
 use crate::config::LanguageLoader;
 use crate::injections_query::{merge_spans, EditMap};
-use crate::{Error, LayerData, Range, Syntax};
+use crate::{Error, Layer, LayerData, Range, Syntax};
 
 impl Syntax {
+    /// Applies `edits` and re-parses. Same as [`Syntax::edit`] followed by [`Syntax::parse`].
     pub fn update(
         &mut self,
         source: RopeSlice,
         timeout: Duration,
         edits: &[tree_sitter::InputEdit],
+        loader: &impl LanguageLoader,
+    ) -> Result<(), Error> {
+        self.edit(edits);
+        self.parse(source, timeout, loader)
+    }
+
+    /// Applies `edits` to every layer without parsing, so the syntax stays usable for
+    /// highlighting until the next [`Syntax::parse`]. Can be called several times before
+    /// parsing.
+    pub fn edit(&mut self, edits: &[tree_sitter::InputEdit]) {
+        if edits.is_empty() {
+            return;
+        }
+        let map = EditMap::new(edits);
+        let layers: Vec<Layer> = self
+            .layers
+            .iter()
+            .map(|(idx, _)| Layer(idx as u32))
+            .collect();
+        for &layer in &layers {
+            let layer_data = self.layer_mut(layer);
+            if let (Some(tree), Some(first), Some(last)) = (
+                &mut layer_data.parse_tree,
+                layer_data.ranges.first(),
+                layer_data.ranges.last(),
+            ) {
+                // Edits that start after the layer's end don't affect it.
+                let reaching = edits.partition_point(|edit| edit.start_byte <= last.end_byte);
+                if reaching > 0 && edits[reaching - 1].old_end_byte < first.start_byte {
+                    // These edits all end before the layer, so they only shift its tree.
+                    tree.edit(&map.shift(reaching));
+                } else {
+                    // Edits are in old coordinates: applying them in reverse keeps them valid.
+                    for edit in edits[..reaching].iter().rev() {
+                        tree.edit(edit);
+                    }
+                }
+            }
+            layer_data.locals.map(&map);
+            self.map_injections(layer, &map);
+        }
+        for &layer in &layers {
+            self.set_child_ranges(layer);
+        }
+        let mut edited: Vec<Range> = self
+            .edited
+            .iter()
+            .map(|region| map.down(region.start)..map.up(region.end))
+            .collect();
+        edited.extend(map.edited_regions());
+        self.edited = merge_regions(edited);
+    }
+
+    /// Re-parses the layers that the edits since the last successful parse touched, and
+    /// re-runs their queries.
+    pub fn parse(
+        &mut self,
+        source: RopeSlice,
+        timeout: Duration,
         loader: &impl LanguageLoader,
     ) -> Result<(), Error> {
         // size limit of 512MiB, TS just cannot handle files this big (too
@@ -23,13 +83,16 @@ impl Syntax {
             return Err(Error::ExceededMaximumSize);
         }
 
+        // A failed parse can leave the flags set.
+        for (_, layer) in self.layers.iter_mut() {
+            layer.flags = Default::default();
+        }
         let mut queue = Vec::with_capacity(32);
         self.layer_mut(self.root).flags.touched = true;
         queue.push(self.root);
 
         let mut parser = Parser::new();
-        let map = EditMap::new(edits);
-        let edited = map.edited_regions();
+        let edited = self.edited.clone();
         // The text each edit inserted, padded by a byte on both sides.
         // A deletion inserts nothing, and the node it shortened now ends at the deletion.
         let edit_spans = merge_spans(
@@ -46,22 +109,9 @@ impl Syntax {
                 continue;
             }
             // The old tree stays valid without a re-parse when no edit touched the text under it
-            // and its included ranges haven't changed. Edits that start after the layer's end
-            // don't affect it.
-            let end = layer_data.ranges.last().unwrap().end_byte;
-            let reaching = edited.partition_point(|region| region.start <= end);
-            let moved = reaching > 0;
-            let reparse = match &mut layer_data.parse_tree {
+            // and its included ranges haven't changed.
+            let reparse = match &layer_data.parse_tree {
                 Some(tree) => {
-                    if moved && edited[reaching - 1].end < layer_data.ranges[0].start_byte {
-                        // These edits all end before the layer, so they only shift its tree.
-                        tree.edit(&map.shift(reaching));
-                    } else {
-                        // Edits are in old coordinates: applying them in reverse keeps them valid.
-                        for edit in edits[..reaching].iter().rev() {
-                            tree.edit(edit);
-                        }
-                    }
                     touches(&layer_data.ranges, &edited)
                         || !tree_has_ranges(tree, &layer_data.ranges)
                 }
@@ -82,7 +132,6 @@ impl Syntax {
             };
             self.run_injection_query(
                 layer,
-                &map,
                 source,
                 loader,
                 |layer| queue.push(layer),
@@ -95,9 +144,7 @@ impl Syntax {
                 .get_config(layer_data.language)
                 .is_some_and(|config| layer_data.locals.configuration_changed(config));
             if reparse || locals_changed {
-                self.run_local_query(layer, &map, source, loader, spans);
-            } else if moved {
-                self.layer_mut(layer).locals.map(&map);
+                self.run_local_query(layer, source, loader, spans);
             }
         }
 
@@ -106,6 +153,7 @@ impl Syntax {
         }
 
         self.prune_dead_layers();
+        self.edited.clear();
         Ok(())
     }
 
@@ -170,6 +218,20 @@ fn tree_has_ranges(tree: &Tree, ranges: &[tree_sitter::Range]) -> bool {
             .all(|(old, new)| old.start_byte == new.start_byte && old.end_byte == new.end_byte)
 }
 
+/// Sorts `regions` and merges those that overlap or touch. Unlike [`merge_spans`] it keeps
+/// empty regions, which mark deletions.
+fn merge_regions(mut regions: Vec<Range>) -> Vec<Range> {
+    regions.sort_unstable_by_key(|region| region.start);
+    regions.dedup_by(|next, prev| {
+        let merge = next.start <= prev.end;
+        if merge {
+            prev.end = prev.end.max(next.end);
+        }
+        merge
+    });
+    regions
+}
+
 /// Whether any of the sorted `ranges` intersects or touches any of the sorted `regions`.
 fn touches(ranges: &[tree_sitter::Range], regions: &[Range]) -> bool {
     regions.iter().any(|region| {
@@ -180,7 +242,7 @@ fn touches(ranges: &[tree_sitter::Range], regions: &[Range]) -> bool {
     })
 }
 
-/// Per-update flags. Reset when the update finishes.
+/// Per-parse flags. Reset when the parse finishes.
 #[derive(Debug, PartialEq, Eq, Default, Clone)]
 pub(crate) struct LayerUpdateFlags {
     /// The layer is still referenced by its parent. Untouched layers are pruned.
