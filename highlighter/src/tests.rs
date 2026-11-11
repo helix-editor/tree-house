@@ -1358,16 +1358,18 @@ fn narrowed_query_predicate() {
     loader.overwrite_injections("rust", HTML_MACRO_INJECTION.to_owned());
     let lang = loader.get("rust");
     // Renaming `htmx!` to `html!` changes no structure, so only the macro name is in the
-    // re-queried span, not the token tree the match injects into.
+    // re-queried span, not the token tree the match injects into. The edit in `pad` puts the
+    // rename in a second span.
     let t0 = "fn pad() { let a = 1; }\nfn main() {\n    htmx!(<p>hello</p>);\n}\n";
-    let t1 = "fn pad() { let a = 1; }\nfn main() {\n    html!(<p>hello</p>);\n}\n";
+    let t1 = "fn pad() { let a = 2; }\nfn main() {\n    html!(<p>hello</p>);\n}\n";
+    let one = t0.find('1').unwrap() as u32;
     let pos = t0.find("htmx").unwrap() as u32 + 3;
     let mut syntax = Syntax::new(t0.into(), lang, PARSE_TIMEOUT, &loader).unwrap();
     syntax
         .update(
             t1.into(),
             PARSE_TIMEOUT,
-            &[edit(pos, pos + 1, pos + 1)],
+            &[edit(one, one + 1, one + 1), edit(pos, pos + 1, pos + 1)],
             &loader,
         )
         .unwrap();

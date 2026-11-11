@@ -5,7 +5,7 @@ use ropey::RopeSlice;
 use tree_sitter::{Parser, Tree};
 
 use crate::config::LanguageLoader;
-use crate::injections_query::EditMap;
+use crate::injections_query::{merge_spans, EditMap};
 use crate::{Error, LayerData, Range, Syntax};
 
 impl Syntax {
@@ -30,11 +30,14 @@ impl Syntax {
         let mut parser = Parser::new();
         let map = EditMap::new(edits);
         let edited = map.edited_regions();
-        let edit_span = edited.first().map_or(0..0, |first| {
-            // The text each edit inserted, padded by a byte on both sides.
-            // A deletion inserts nothing, and the node it shortened now ends at the deletion.
-            first.start.saturating_sub(1)..edited.last().unwrap().end + 1
-        });
+        // The text each edit inserted, padded by a byte on both sides.
+        // A deletion inserts nothing, and the node it shortened now ends at the deletion.
+        let edit_spans = merge_spans(
+            edited
+                .iter()
+                .map(|region| region.start.saturating_sub(1)..region.end + 1)
+                .collect(),
+        );
 
         while let Some(layer) = queue.pop() {
             let layer_data = self.layer_mut(layer);
@@ -62,17 +65,27 @@ impl Syntax {
                 }
                 None => true,
             };
-            // With a span, only the injections intersecting it are re-queried.
-            let span = if reparse {
+            // The regions to re-query. `None` re-queries everything.
+            let spans = if reparse {
                 // Text edits can change a match without changing the structure (e.g. renaming
                 // an injected language), so the edits count as changed regions too.
                 layer_data
                     .parse(&mut parser, source, timeout, loader)?
-                    .map(|span| union_ranges(span, edit_span.clone()))
+                    .map(|mut spans| {
+                        spans.extend_from_slice(&edit_spans);
+                        merge_spans(spans)
+                    })
             } else {
-                Some(0..0)
+                Some(Vec::new())
             };
-            self.run_injection_query(layer, &map, source, loader, |layer| queue.push(layer), span);
+            self.run_injection_query(
+                layer,
+                &map,
+                source,
+                loader,
+                |layer| queue.push(layer),
+                spans,
+            );
             if reparse {
                 self.run_local_query(layer, source, loader);
             } else if moved {
@@ -98,7 +111,7 @@ impl Syntax {
 impl LayerData {
     /// Parses this layer's tree.
     ///
-    /// With an old tree it returns the span of regions that structurally changed.
+    /// With an old tree it returns the regions that structurally changed.
     /// `None` means assume everything changed.
     fn parse(
         &mut self,
@@ -106,7 +119,7 @@ impl LayerData {
         source: RopeSlice,
         timeout: Duration,
         loader: &impl LanguageLoader,
-    ) -> Result<Option<Range>, Error> {
+    ) -> Result<Option<Vec<Range>>, Error> {
         let Some(config) = loader.get_config(self.language) else {
             return Ok(None);
         };
@@ -128,16 +141,15 @@ impl LayerData {
         let new_tree = parser
             .parse_with_timeout(source, tree, timeout)
             .ok_or(Error::Timeout)?;
-        let changed_span = tree.map(|old_tree| {
+        let changed = tree.map(|old_tree| {
             old_tree
                 .changed_ranges(&new_tree)
                 .iter()
-                .fold(0..0, |span, range| {
-                    union_ranges(span, range.start_byte..range.end_byte)
-                })
+                .map(|range| range.start_byte..range.end_byte)
+                .collect()
         });
         self.parse_tree = Some(new_tree);
-        Ok(changed_span)
+        Ok(changed)
     }
 }
 
@@ -158,16 +170,6 @@ fn touches(ranges: &[tree_sitter::Range], regions: &[Range]) -> bool {
             .get(i)
             .is_some_and(|range| range.start_byte <= region.end)
     })
-}
-
-fn union_ranges(a: Range, b: Range) -> Range {
-    if a.is_empty() {
-        b
-    } else if b.is_empty() {
-        a
-    } else {
-        a.start.min(b.start)..a.end.max(b.end)
-    }
 }
 
 /// Per-update flags. Reset when the update finishes.
