@@ -37,7 +37,6 @@ impl Syntax {
         });
 
         while let Some(layer) = queue.pop() {
-            let is_root = layer == self.root;
             let layer_data = self.layer_mut(layer);
             if layer_data.ranges.is_empty() {
                 // Skip re-parsing and querying layers without any ranges.
@@ -68,7 +67,7 @@ impl Syntax {
                 // Text edits can change a match without changing the structure (e.g. renaming
                 // an injected language), so the edits count as changed regions too.
                 layer_data
-                    .parse(&mut parser, source, timeout, loader, is_root)?
+                    .parse(&mut parser, source, timeout, loader)?
                     .map(|span| union_ranges(span, edit_span.clone()))
             } else {
                 Some(0..0)
@@ -99,7 +98,7 @@ impl Syntax {
 impl LayerData {
     /// Parses this layer's tree.
     ///
-    /// With `narrow` and an old tree it returns the span of regions that structurally changed.
+    /// With an old tree it returns the span of regions that structurally changed.
     /// `None` means assume everything changed.
     fn parse(
         &mut self,
@@ -107,7 +106,6 @@ impl LayerData {
         source: RopeSlice,
         timeout: Duration,
         loader: &impl LanguageLoader,
-        narrow: bool,
     ) -> Result<Option<Range>, Error> {
         let Some(config) = loader.get_config(self.language) else {
             return Ok(None);
@@ -130,7 +128,7 @@ impl LayerData {
         let new_tree = parser
             .parse_with_timeout(source, tree, timeout)
             .ok_or(Error::Timeout)?;
-        let changed_span = tree.filter(|_| narrow).map(|old_tree| {
+        let changed_span = tree.map(|old_tree| {
             old_tree
                 .changed_ranges(&new_tree)
                 .iter()

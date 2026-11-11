@@ -1673,6 +1673,44 @@ fn bench_update() {
         "render 4KB viewport: {:?}/frame ({events} events)",
         start.elapsed() / frames
     );
+
+    // A single large fence: edits inside it re-parse and re-query its big rust layer.
+    let mut text = String::from("# Big fence\n\n```rust\n");
+    for i in 0..1200 {
+        text.push_str(&format!(
+            "/// doc line {i}\nfn f{i}(x: u32) -> u32 {{ x + {i} }}\n"
+        ));
+    }
+    text.push_str("```\n");
+    eprintln!("big doc: {} bytes, one rust fence", text.len());
+    let mut syntax = Syntax::new(text.as_str().into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+    let pos = text.find("x + 600").unwrap() as u32;
+    eprintln!(
+        "big-fence edit: {:?}/update",
+        toggle(&mut syntax, &mut text, pos)
+    );
+}
+
+#[test]
+fn narrowed_child_query_predicate() {
+    let mut loader = TestLanguageLoader::new();
+    loader.overwrite_injections("rust", HTML_MACRO_INJECTION.to_owned());
+    let lang = loader.get("markdown");
+    let t0 =
+        "# t\n\n```rust\nfn pad() { let a = 1; }\nfn main() {\n    htmx!(<p>hi</p>);\n}\n```\n";
+    let t1 =
+        "# t\n\n```rust\nfn pad() { let a = 1; }\nfn main() {\n    html!(<p>hi</p>);\n}\n```\n";
+    let pos = t0.find("htmx").unwrap() as u32 + 3;
+    let mut syntax = Syntax::new(t0.into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+    syntax
+        .update(
+            t1.into(),
+            PARSE_TIMEOUT,
+            &[edit(pos, pos + 1, pos + 1)],
+            &loader,
+        )
+        .unwrap();
+    assert_matches_fresh(&loader, lang, &syntax, t1);
 }
 
 /// Randomized sweep of multi-edit transactions (1-3 edits each) with edits around injection boundaries.
