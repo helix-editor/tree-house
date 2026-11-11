@@ -171,7 +171,7 @@ impl LanguageLoader for TestLanguageLoader {
                 let name: Cow<str> = text.into();
                 self.languages.get(name.as_ref()).copied()
             }
-            _ => unimplemented!(),
+            _ => None,
         }
     }
 
@@ -1673,4 +1673,131 @@ fn bench_update() {
         "render 4KB viewport: {:?}/frame ({events} events)",
         start.elapsed() / frames
     );
+}
+
+/// Randomized sweep of multi-edit transactions (1-3 edits each) with edits around injection boundaries.
+#[test]
+fn multi_edit_sweep() {
+    const MARKDOWN_PIECES: &[&str] = &[
+        "plain paragraph text\n\n",
+        "# heading\n\n",
+        "```rust\nfn foo(alpha: u32) -> u32 {\n    alpha + 1\n}\n```\n\n",
+        "```rust\nlet beta = 1;\n```\n\n",
+        "<!-- one -->\n",
+        "<!-- two -->\n\n",
+        "```\nplain fence\n```\n\n",
+        "text with `code` and *emph*\n\n",
+        "```html\n<b>x</b><!-- c -->\n```\n\n",
+        "```rust\n/// ```rust\n/// let x = 1;\n/// ```\nfn g() {}\n```\n\n",
+    ];
+    const MARKDOWN_INSERTS: &[&str] = &[
+        "x",
+        "`",
+        "*",
+        "\n",
+        "```",
+        "```rust\n",
+        "<!-- z -->\n",
+        "rust",
+        "-->",
+        "<!--",
+        "\n\n",
+    ];
+    const RUST_PIECES: &[&str] = &[
+        "/// alpha beta\n",
+        "/// `code` and *emph*\n",
+        "///\n",
+        "/// ```\n/// let a = 1;\n/// ```\n",
+        "fn f(a: u32) { let x = a; }\n",
+        "\n",
+        "// plain comment\n",
+        "struct S;\n",
+        "impl S {\n    /// inner doc\n    fn m(&self) {}\n}\n",
+        "html!(<p>hi</p>);\n",
+    ];
+    const RUST_INSERTS: &[&str] = &[
+        "/// gamma\n",
+        "///x\n",
+        "\n",
+        "fn g() {}\n",
+        "x",
+        "`",
+        "*",
+        "/",
+        "{",
+        "}",
+        " ",
+        "//",
+        "ml",
+    ];
+    const MARKERS: &[&str] = &[
+        "\n", "///", "```", "<!--", "-->", "`", "*", "{", "}", "html",
+    ];
+
+    let loader = TestLanguageLoader::new();
+    let mut rng = Lcg(0x5EED);
+    let mut diverged = 0;
+    for (lang, pieces, inserts) in [
+        ("markdown", MARKDOWN_PIECES, MARKDOWN_INSERTS),
+        ("rust", RUST_PIECES, RUST_INSERTS),
+    ] {
+        let lang = loader.get(lang);
+        for _ in 0..30 {
+            let mut text = String::new();
+            for _ in 0..2 + rng.next(8) {
+                text.push_str(pieces[rng.next(pieces.len())]);
+            }
+            let mut syntax =
+                Syntax::new(text.as_str().into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+            for _ in 0..8 {
+                // Ascending, non-overlapping edits in old-text coordinates.
+                let mut edits = Vec::new();
+                let mut after = String::new();
+                let mut copied = 0;
+                let mut lo = 0;
+                for _ in 0..1 + rng.next(3) {
+                    if lo >= text.len() {
+                        break;
+                    }
+                    let marks: Vec<usize> = MARKERS
+                        .iter()
+                        .flat_map(|m| text.match_indices(m).flat_map(|(i, m)| [i, i + m.len()]))
+                        .filter(|&i| i >= lo && i <= text.len())
+                        .collect();
+                    let start = if !marks.is_empty() && rng.next(3) != 0 {
+                        marks[rng.next(marks.len())]
+                    } else {
+                        lo + rng.next(text.len() - lo + 1)
+                    };
+                    let kind = rng.next(3); // insert, delete or replace
+                    let end = if kind == 0 {
+                        start
+                    } else {
+                        let len = if rng.next(4) == 0 { 12 } else { 3 };
+                        (start + 1 + rng.next(len)).min(text.len())
+                    };
+                    let ins = if kind == 1 {
+                        ""
+                    } else {
+                        inserts[rng.next(inserts.len())]
+                    };
+                    if start == end && ins.is_empty() {
+                        continue;
+                    }
+                    after.push_str(&text[copied..start]);
+                    after.push_str(ins);
+                    edits.push(edit(start as u32, end as u32, (start + ins.len()) as u32));
+                    copied = end;
+                    lo = end + 1;
+                }
+                if edits.is_empty() {
+                    continue;
+                }
+                after.push_str(&text[copied..]);
+                update_matches_fresh(&loader, lang, &mut syntax, &edits, &after, &mut diverged);
+                text = after;
+            }
+        }
+    }
+    eprintln!("steps where tree-sitter diverged from a fresh parse: {diverged}");
 }
