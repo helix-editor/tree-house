@@ -6,9 +6,9 @@ use std::{
 use hashbrown::HashMap;
 use kstring::KString;
 use ropey::RopeSlice;
-use tree_sitter::{Capture, InactiveQueryCursor};
+use tree_sitter::{Capture, InactiveQueryCursor, Node, Pattern, Query};
 
-use crate::injections_query::EditMap;
+use crate::injections_query::{absorb, grow_spans, intersects_any, match_extent, EditMap};
 use crate::{LanguageConfig, LanguageLoader, Layer, Range, Syntax, TREE_SITTER_MATCH_LIMIT};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
@@ -24,6 +24,18 @@ impl Scope {
 #[derive(Debug, Clone)]
 pub struct Locals {
     scopes: Vec<ScopeData>,
+    /// The captures `scopes` was built from, so a narrowed re-run can update them. `None` when
+    /// they no longer match the tree.
+    captures: Option<Vec<LocalCapture>>,
+}
+
+#[derive(Debug, Clone)]
+struct LocalCapture {
+    range: Range,
+    /// The range of the node the match is rooted at, see [`crate::Injection`].
+    extent: Range,
+    capture: Capture,
+    pattern: Pattern,
 }
 
 impl Default for Locals {
@@ -37,7 +49,10 @@ impl Default for Locals {
             parent: None,
         });
 
-        Self { scopes }
+        Self {
+            scopes,
+            captures: None,
+        }
     }
 }
 
@@ -80,6 +95,10 @@ impl Locals {
                 definition.range = map_pos(definition.range.start)..map_pos(definition.range.end);
             }
         }
+        for capture in self.captures.iter_mut().flatten() {
+            capture.range = map_pos(capture.range.start)..map_pos(capture.range.end);
+            capture.extent = map_pos(capture.extent.start)..map_pos(capture.extent.end);
+        }
     }
 
     pub fn scope_cursor(&self, pos: u32) -> ScopeCursor<'_> {
@@ -109,6 +128,15 @@ impl Locals {
 #[cfg(test)]
 impl Locals {
     pub(crate) fn dump(&self) -> Vec<String> {
+        let captures = self.captures.iter().flatten().map(|capture| {
+            let LocalCapture {
+                range,
+                extent,
+                capture,
+                pattern,
+            } = capture;
+            format!("{range:?} {extent:?} {capture:?} {pattern:?}")
+        });
         self.scopes
             .iter()
             .map(|scope| {
@@ -123,6 +151,7 @@ impl Locals {
                     scope.range, scope.inherit, scope.parent, scope.children
                 )
             })
+            .chain(captures)
             .collect()
     }
 }
@@ -206,13 +235,18 @@ pub struct ScopeData {
 }
 
 impl Syntax {
+    /// Rebuilds the layer's locals from its new tree. With `spans` (see
+    /// [`Syntax::run_injection_query`]), only the captures intersecting them are re-queried.
     pub(crate) fn run_local_query(
         &mut self,
         layer: Layer,
+        map: &EditMap,
         source: RopeSlice<'_>,
         loader: &impl LanguageLoader,
+        spans: Option<Vec<Range>>,
     ) {
         let layer_data = &mut self.layer_mut(layer);
+        let old = layer_data.locals.captures.take();
         let Some(LanguageConfig {
             ref injection_query,
             ..
@@ -226,15 +260,48 @@ impl Syntax {
         }
 
         let root = layer_data.parse_tree.as_ref().unwrap().root_node();
-        let mut cursor = InactiveQueryCursor::new(0..u32::MAX, TREE_SITTER_MATCH_LIMIT)
-            .execute_query(&injection_query.local_query, &root, source);
+        let query = &injection_query.local_query;
+        let depths = &injection_query.local_capture_depths;
+        let captures = match (spans, old) {
+            (Some(mut spans), Some(mut old)) => {
+                for capture in &mut old {
+                    capture.range = map.down(capture.range.start)..map.up(capture.range.end);
+                    capture.extent = map.down(capture.extent.start)..map.up(capture.extent.end);
+                }
+                let new = loop {
+                    let old_extents = old.iter().map(|capture| &capture.extent);
+                    grow_spans(query, depths, &root, source, old_extents, &mut spans);
+                    let mut new = Vec::new();
+                    for span in &spans {
+                        query_captures(query, depths, &root, source, span.clone(), &mut new);
+                    }
+                    let escaped = new.iter().fold(false, |grew, capture| {
+                        grew | absorb(&mut spans, &capture.extent)
+                    });
+                    if !escaped {
+                        break new;
+                    }
+                };
+                // Captures of the same node are either all kept or all re-queried, so the stable
+                // sort by start keeps them in cursor order.
+                let mut captures = old;
+                captures.retain(|capture| !intersects_any(&spans, &capture.range));
+                captures.extend(new);
+                captures.sort_by_key(|capture| capture.range.start);
+                captures
+            }
+            _ => {
+                let mut captures = Vec::new();
+                query_captures(query, depths, &root, source, 0..u32::MAX, &mut captures);
+                captures
+            }
+        };
+
         let mut locals = Locals::default();
         let mut scope = Scope::ROOT;
-
-        while let Some((query_match, node_idx)) = cursor.next_matched_node() {
-            let matched_node = query_match.matched_node(node_idx);
-            let range = matched_node.node.byte_range();
-            let capture = matched_node.capture;
+        for local in &captures {
+            let range = local.range.clone();
+            let capture = local.capture;
 
             while range.start >= locals[scope].range.end {
                 scope = locals[scope].parent.expect("root node covers entire range");
@@ -243,10 +310,8 @@ impl Syntax {
             if Some(capture) == injection_query.local_scope_capture {
                 scope = locals.push(ScopeData {
                     definitions: HashMap::new(),
-                    range: matched_node.node.byte_range(),
-                    inherit: !injection_query
-                        .not_scope_inherits
-                        .contains(&query_match.pattern()),
+                    range,
+                    inherit: !injection_query.not_scope_inherits.contains(&local.pattern),
                     children: Vec::new(),
                     parent: Some(scope),
                 });
@@ -265,8 +330,37 @@ impl Syntax {
             // NOTE: `local.reference` captures are handled by the highlighter and are not
             // considered during parsing.
         }
+        locals.captures = Some(captures);
 
         layer_data.locals = locals;
+    }
+}
+
+/// Appends the captures of the locals `query` intersecting `span`, in cursor order.
+fn query_captures(
+    query: &Query,
+    depths: &[Vec<(Capture, u32)>],
+    root: &Node,
+    source: RopeSlice,
+    span: Range,
+    out: &mut Vec<LocalCapture>,
+) {
+    // A cursor skips zero-width captures at the very start of its range so widen the range by a byte.
+    // Such captures still count as intersecting the span.
+    let range = span.start.saturating_sub(1)..span.end.saturating_add(1);
+    let mut cursor =
+        InactiveQueryCursor::new(range, TREE_SITTER_MATCH_LIMIT).execute_query(query, root, source);
+    while let Some((query_match, node_idx)) = cursor.next_matched_node() {
+        let matched_node = query_match.matched_node(node_idx);
+        if !intersects_any(std::slice::from_ref(&span), &matched_node.node.byte_range()) {
+            continue;
+        }
+        out.push(LocalCapture {
+            range: matched_node.node.byte_range(),
+            extent: match_extent(depths, &query_match),
+            capture: matched_node.capture,
+            pattern: query_match.pattern(),
+        });
     }
 }
 

@@ -95,6 +95,8 @@ pub struct InjectionsQuery {
     /// Per pattern, see [`Query::pattern_capture_depths`].
     capture_depths: Box<[Vec<(Capture, u32)>]>,
     pub(crate) local_query: Query,
+    /// Per locals pattern, see [`Query::pattern_capture_depths`].
+    pub(crate) local_capture_depths: Box<[Vec<(Capture, u32)>]>,
     // TODO: Use a Vec<bool> instead?
     pub(crate) not_scope_inherits: HashSet<Pattern>,
     pub(crate) local_scope_capture: Option<Capture>,
@@ -179,6 +181,10 @@ impl InjectionsQuery {
             not_scope_inherits,
             local_scope_capture: local_query.get_capture("local.scope"),
             local_definition_captures: ArcSwap::from_pointee(HashMap::new()),
+            local_capture_depths: local_query
+                .patterns()
+                .map(|pattern| local_query.pattern_capture_depths(pattern))
+                .collect(),
             local_query,
         })
     }
@@ -402,7 +408,7 @@ impl InjectionsQuery {
 }
 
 /// The byte range of the node `query_match` is rooted at. `depths` holds each pattern's capture depths.
-fn match_extent(depths: &[Vec<(Capture, u32)>], query_match: &QueryMatch) -> Range {
+pub(crate) fn match_extent(depths: &[Vec<(Capture, u32)>], query_match: &QueryMatch) -> Range {
     let depths = &depths[query_match.pattern().idx()];
     let start = query_match
         .matched_nodes()
@@ -425,11 +431,9 @@ fn match_extent(depths: &[Vec<(Capture, u32)>], query_match: &QueryMatch) -> Ran
     node.byte_range()
 }
 
-/// Grows `spans` so that re-running `query` over them gives results that can replace the old
-/// ones in those spans. Each span must contain the whole extent of every match the query
-/// finds in it, and of every old result it intersects. `old` holds the extents of the old
-/// results, already mapped through the edits.
-fn grow_spans<'a>(
+/// Grows `spans` until each one contains every new match and old result it touches. `old`
+/// holds the old results' extents, mapped through the edits.
+pub(crate) fn grow_spans<'a>(
     query: &Query,
     depths: &[Vec<(Capture, u32)>],
     node: &Node,
@@ -455,7 +459,10 @@ fn grow_spans<'a>(
             let mut cursor = InactiveQueryCursor::new(edge, TREE_SITTER_MATCH_LIMIT)
                 .execute_query(query, node, source);
             while let Some(query_match) = cursor.next_match() {
-                grew |= absorb(spans, &match_extent(depths, &query_match));
+                // A match without captures (e.g. a disabled `local.reference`) produces nothing.
+                if query_match.matched_nodes().next().is_some() {
+                    grew |= absorb(spans, &match_extent(depths, &query_match));
+                }
             }
         }
         if !grew {
@@ -920,10 +927,9 @@ pub(crate) fn merge_spans(mut spans: Vec<Range>) -> Vec<Range> {
     spans
 }
 
-/// Extends the spans that `range` intersects to cover all of it, merging spans that then
-/// touch. `spans` must be sorted, with no two overlapping or touching. Returns whether any span
-/// grew. A `range` that doesn't intersect anything is a no-op.
-fn absorb(spans: &mut Vec<Range>, range: &Range) -> bool {
+/// Grows the spans `range` intersects to cover it, merging any that then touch. Returns
+/// whether a span grew.
+pub(crate) fn absorb(spans: &mut Vec<Range>, range: &Range) -> bool {
     let mut lo = spans.partition_point(|span| span.end <= range.start);
     if !spans
         .get(lo)
@@ -947,7 +953,7 @@ fn absorb(spans: &mut Vec<Range>, range: &Range) -> bool {
 }
 
 /// Whether `range` intersects any of the sorted, non-overlapping `spans`.
-fn intersects_any(spans: &[Range], range: &Range) -> bool {
+pub(crate) fn intersects_any(spans: &[Range], range: &Range) -> bool {
     let i = spans.partition_point(|span| span.end <= range.start);
     spans
         .get(i)

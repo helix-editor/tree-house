@@ -1720,6 +1720,26 @@ fn narrowed_child_query_predicate() {
     assert_matches_fresh(&loader, lang, &syntax, t1);
 }
 
+#[test]
+fn narrowed_locals_missing_node() {
+    let loader = TestLanguageLoader::new();
+    let lang = loader.get("rust");
+    // The parameter's missing identifier is a zero-width definition at the start of a changed range.
+    let t0 = "fn f(\n: u32) \n    let x = a;\n}\n";
+    let t1 = "fn f(\n: u32) //\n    let x = a;\n}\n";
+    let pos = t0.find(") ").unwrap() as u32 + 2;
+    let mut syntax = Syntax::new(t0.into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+    syntax
+        .update(
+            t1.into(),
+            PARSE_TIMEOUT,
+            &[edit(pos, pos, pos + 2)],
+            &loader,
+        )
+        .unwrap();
+    assert_matches_fresh(&loader, lang, &syntax, t1);
+}
+
 /// Randomized sweep of multi-edit transactions (1-3 edits each) with edits around injection boundaries.
 #[test]
 fn multi_edit_sweep() {

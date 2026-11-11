@@ -84,10 +84,10 @@ impl Syntax {
                 source,
                 loader,
                 |layer| queue.push(layer),
-                spans,
+                spans.clone(),
             );
             if reparse {
-                self.run_local_query(layer, source, loader);
+                self.run_local_query(layer, &map, source, loader, spans);
             } else if moved {
                 self.layer_mut(layer).locals.map(&map);
             }
