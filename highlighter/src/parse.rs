@@ -2,10 +2,11 @@ use std::mem::take;
 use std::time::Duration;
 
 use ropey::RopeSlice;
-use tree_sitter::Parser;
+use tree_sitter::{Parser, Tree};
 
 use crate::config::LanguageLoader;
-use crate::{Error, Layer, LayerData, Range, Syntax};
+use crate::injections_query::EditMap;
+use crate::{Error, LayerData, Range, Syntax};
 
 impl Syntax {
     pub fn update(
@@ -23,15 +24,17 @@ impl Syntax {
         }
 
         let mut queue = Vec::with_capacity(32);
-        let root_flags = &mut self.layer_mut(self.root).flags;
-        // The root layer is always considered.
-        root_flags.touched = true;
-        // If there was an edit then the root layer must've been modified.
-        root_flags.modified = true;
+        self.layer_mut(self.root).flags.touched = true;
         queue.push(self.root);
 
         let mut parser = Parser::new();
-        let edit_span = edit_span(edits);
+        let map = EditMap::new(edits);
+        let edited = map.edited_regions();
+        let edit_span = edited.first().map_or(0..0, |first| {
+            // The text each edit inserted, padded by a byte on both sides.
+            // A deletion inserts nothing, and the node it shortened now ends at the deletion.
+            first.start.saturating_sub(1)..edited.last().unwrap().end + 1
+        });
 
         while let Some(layer) = queue.pop() {
             let is_root = layer == self.root;
@@ -40,43 +43,41 @@ impl Syntax {
                 // Skip re-parsing and querying layers without any ranges.
                 continue;
             }
-            let mut fresh = false;
-            let mut changed_span = None;
-            if let Some(tree) = &mut layer_data.parse_tree {
-                if layer_data.flags.moved || layer_data.flags.modified {
-                    for edit in edits.iter().rev() {
-                        // Apply the edits in reverse.
-                        // If we applied them in order then edit 1 would disrupt the positioning
-                        // of edit 2.
-                        tree.edit(edit);
+            // The old tree stays valid without a re-parse when no edit touched the text under it
+            // and its included ranges haven't changed. Text before the first edit has the same
+            // offsets in old and new coordinates, so an edit starting past the layer's end
+            // doesn't move it.
+            let moved = edited
+                .first()
+                .is_some_and(|first| first.start <= layer_data.ranges.last().unwrap().end_byte);
+            let reparse = match &mut layer_data.parse_tree {
+                Some(tree) => {
+                    if moved {
+                        // Edits are in old coordinates: applying them in reverse keeps them valid.
+                        for edit in edits.iter().rev() {
+                            tree.edit(edit);
+                        }
                     }
+                    touches(&layer_data.ranges, &edited)
+                        || !tree_has_ranges(tree, &layer_data.ranges)
                 }
-                if layer_data.flags.modified {
-                    // Re-parse the tree. Comparing the old and new tree is only sound when the
-                    // included ranges cannot have changed, which holds for the root's whole-document range.
-                    changed_span =
-                        layer_data.parse(&mut parser, source, timeout, loader, is_root)?;
-                }
-            } else {
-                // always parse if this layer has never been parsed before
-                layer_data.parse(&mut parser, source, timeout, loader, false)?;
-                fresh = true;
-            }
-            if fresh || self.layer(layer).flags.modified {
+                None => true,
+            };
+            // With a span, only the injections intersecting it are re-queried.
+            let span = if reparse {
                 // Text edits can change a match without changing the structure (e.g. renaming
                 // an injected language), so the edits count as changed regions too.
-                let span = changed_span.map(|span| union_ranges(span, edit_span.clone()));
-                self.run_injection_query(
-                    layer,
-                    edits,
-                    source,
-                    loader,
-                    |layer| queue.push(layer),
-                    span,
-                );
-                self.run_local_query(layer, source, loader);
+                layer_data
+                    .parse(&mut parser, source, timeout, loader, is_root)?
+                    .map(|span| union_ranges(span, edit_span.clone()))
             } else {
-                self.map_unmodified_layer(layer, edits, |layer| queue.push(layer));
+                Some(0..0)
+            };
+            self.run_injection_query(layer, &map, source, loader, |layer| queue.push(layer), span);
+            if reparse {
+                self.run_local_query(layer, source, loader);
+            } else if moved {
+                self.layer_mut(layer).locals.map(&map);
             }
         }
 
@@ -92,38 +93,6 @@ impl Syntax {
     fn prune_dead_layers(&mut self) {
         self.layers
             .retain(|_, layer| take(&mut layer.flags).touched);
-    }
-
-    /// Carries a layer without edits inside its ranges over without re-running its injection
-    /// and locals queries: contents only shift by the offsets of the edits before them.
-    fn map_unmodified_layer(
-        &mut self,
-        layer: Layer,
-        edits: &[tree_sitter::InputEdit],
-        mut parse_layer: impl FnMut(Layer),
-    ) {
-        // Children of an unmodified layer can only have moved.
-        self.map_injections(layer, None, edits);
-        let layer_data = self.layer_mut(layer);
-        if layer_data.flags.moved {
-            layer_data.locals.map(edits);
-        }
-        let injections = take(&mut self.layer_mut(layer).injections);
-        for injection in &injections {
-            let child = self.layer_mut(injection.layer);
-            if !child.flags.touched {
-                child.flags.touched = true;
-                child.ranges.clear();
-                parse_layer(injection.layer);
-            }
-            child.ranges.push(tree_sitter::Range::new(
-                tree_sitter::Point::ZERO,
-                tree_sitter::Point::ZERO,
-                injection.range.start,
-                injection.range.end,
-            ));
-        }
-        self.layer_mut(layer).injections = injections;
     }
 }
 
@@ -150,17 +119,13 @@ impl LayerData {
             .set_included_ranges(&self.ranges)
             .map_err(|_| Error::InvalidRanges)?;
 
-        // An old tree may only seed the parse under exactly the included ranges it was parsed
-        // with (as moved by the edits). Otherwise tree-sitter reuses subtrees and resumes
-        // external scanner state in contexts they were not produced in, which misparses and
-        // has crashed tree-sitter-markdown's block scanner.
-        let tree = self.parse_tree.as_ref().filter(|tree| {
-            let included = tree.included_ranges();
-            included.len() == self.ranges.len()
-                && included.iter().zip(&self.ranges).all(|(old, new)| {
-                    old.start_byte == new.start_byte && old.end_byte == new.end_byte
-                })
-        });
+        // Only seed the parse with a tree parsed under the same ranges. Otherwise tree-sitter
+        // reuses subtrees and scanner state in the wrong context, which misparses and has
+        // crashed tree-sitter-markdown.
+        let tree = self
+            .parse_tree
+            .as_ref()
+            .filter(|tree| tree_has_ranges(tree, &self.ranges));
 
         let new_tree = parser
             .parse_with_timeout(source, tree, timeout)
@@ -178,6 +143,25 @@ impl LayerData {
     }
 }
 
+fn tree_has_ranges(tree: &Tree, ranges: &[tree_sitter::Range]) -> bool {
+    let included = tree.included_ranges();
+    included.len() == ranges.len()
+        && included
+            .iter()
+            .zip(ranges)
+            .all(|(old, new)| old.start_byte == new.start_byte && old.end_byte == new.end_byte)
+}
+
+/// Whether any of the sorted `ranges` intersects or touches any of the sorted `regions`.
+fn touches(ranges: &[tree_sitter::Range], regions: &[Range]) -> bool {
+    regions.iter().any(|region| {
+        let i = ranges.partition_point(|range| range.end_byte < region.start);
+        ranges
+            .get(i)
+            .is_some_and(|range| range.start_byte <= region.end)
+    })
+}
+
 fn union_ranges(a: Range, b: Range) -> Range {
     if a.is_empty() {
         b
@@ -188,26 +172,11 @@ fn union_ranges(a: Range, b: Range) -> Range {
     }
 }
 
-/// The span covered by `edits`, in new-text coordinates, or an empty range without edits.
-///
-/// Each edit's region is widened by a byte on both sides: a deletion leaves the nodes it
-/// shortened as touching the edit's position (they must still count as edited).
-fn edit_span(edits: &[tree_sitter::InputEdit]) -> Range {
-    let mut span = 0..0;
-    let mut offset = 0i32;
-    for edit in edits {
-        let new_start = (edit.start_byte as i32 + offset) as u32;
-        let new_end = (edit.new_end_byte as i32 + offset) as u32;
-        offset += edit.offset();
-        span = union_ranges(span, new_start.saturating_sub(1)..new_end + 1);
-    }
-    span
-}
-
+/// Per-update flags. Reset when the update finishes.
 #[derive(Debug, PartialEq, Eq, Default, Clone)]
 pub(crate) struct LayerUpdateFlags {
-    pub reused: bool,
-    pub modified: bool,
-    pub moved: bool,
+    /// The layer is still referenced by its parent. Untouched layers are pruned.
     pub touched: bool,
+    /// An injection of the parent's re-query already claimed the layer, so it can't be further reused.
+    pub reused: bool,
 }

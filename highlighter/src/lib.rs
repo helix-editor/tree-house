@@ -209,10 +209,8 @@ impl Syntax {
 pub struct Injection {
     pub range: Range,
     pub layer: Layer,
-    matched_node_range: Range,
-    /// The range of the node the producing query match is rooted at, which contains every
-    /// node the match depends on. A narrowed injection query must see the whole range to
-    /// reproduce or invalidate the match.
+    /// Range of the node the match is rooted at. A narrowed query must cover all of it to find
+    /// the match again.
     pattern_range: Range,
 }
 
@@ -349,7 +347,6 @@ mod unit_tests {
         Injection {
             range: start..end,
             layer: Layer(0),
-            matched_node_range: start..end,
             pattern_range: start..end,
         }
     }

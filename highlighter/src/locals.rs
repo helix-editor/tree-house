@@ -8,6 +8,7 @@ use kstring::KString;
 use ropey::RopeSlice;
 use tree_sitter::{Capture, InactiveQueryCursor};
 
+use crate::injections_query::EditMap;
 use crate::{LanguageConfig, LanguageLoader, Layer, Range, Syntax, TREE_SITTER_MATCH_LIMIT};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
@@ -66,19 +67,10 @@ impl Locals {
         None
     }
 
-    /// Maps all stored positions through `edits`. Edits must lie outside the layer's ranges
-    /// so that every position just shifts by the offsets of the edits before it.
-    pub(crate) fn map(&mut self, edits: &[tree_sitter::InputEdit]) {
-        let map_pos = |pos: u32| {
-            let mut offset = 0i32;
-            for edit in edits {
-                if edit.old_end_byte > pos {
-                    break;
-                }
-                offset += edit.offset();
-            }
-            (pos as i32 + offset) as u32
-        };
+    /// Maps all stored positions through `map`. Edits must lie outside the layer's ranges
+    /// so that every position just shifts.
+    pub(crate) fn map(&mut self, map: &EditMap) {
+        let map_pos = |pos: u32| map.down(pos);
         for scope in &mut self.scopes {
             // The root scope covers `0..u32::MAX` rather than real positions.
             if scope.range.end != u32::MAX {

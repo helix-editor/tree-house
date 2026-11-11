@@ -439,13 +439,13 @@ impl Syntax {
     pub(crate) fn run_injection_query(
         &mut self,
         layer: Layer,
-        edits: &[tree_sitter::InputEdit],
+        map: &EditMap,
         source: RopeSlice<'_>,
         loader: &impl LanguageLoader,
         mut parse_layer: impl FnMut(Layer),
         span: Option<Range>,
     ) {
-        self.map_injections(layer, None, edits);
+        self.map_injections(layer, map);
         let layer_data = &mut self.layer_mut(layer);
         let Some(LanguageConfig {
             injection_query: ref injections_query,
@@ -455,6 +455,11 @@ impl Syntax {
             return;
         };
         if injections_query.injection_content_capture.is_none() {
+            return;
+        }
+
+        if span.as_ref().is_some_and(|span| span.is_empty()) {
+            self.update_children(layer, &mut parse_layer);
             return;
         }
 
@@ -518,7 +523,6 @@ impl Syntax {
         let mut old_injections = old_in_span.into_iter().peekable();
 
         let mut combined_injections: HashMap<InjectionScope, Layer> = HashMap::with_capacity(32);
-        let mut new_ranges: Vec<Range> = Vec::new();
         for mat in injection_query {
             let matched_node_range = mat.node.byte_range();
             let mut insert_position = injections.len();
@@ -543,15 +547,8 @@ impl Syntax {
                 }
             }
 
-            let language = mat.language;
-            new_ranges.clear();
-            new_ranges.extend(intersect_ranges(
-                mat.include_children,
-                mat.node.clone(),
-                &parent_ranges,
-            ));
-            // Combined injection matches share its layer and must still
-            // consume that layer's old injections.
+            // Combined injection matches share one layer and may still reuse that layer's old
+            // injections.
             let combined_layer = mat.scope.and_then(|scope| {
                 combined_injections
                     .get(&scope)
@@ -559,26 +556,20 @@ impl Syntax {
                     .copied()
             });
             let reused_injection = self.reuse_injection(
-                language,
+                mat.language,
                 &matched_node_range,
                 combined_layer,
-                &new_ranges,
                 &mut old_injections,
             );
-            // A combined layer's scope outlives the update.
-            // A multi-content-node match re-runs whole, as its entries share one extent.
+            // Only `injection.combined` layers keep their scope after the update. A
+            // multi-content-node match is always re-run whole, so its layer doesn't need one.
             let combined_scope = mat
                 .scope
                 .filter(|scope| matches!(scope, InjectionScope::Pattern { .. }));
             let layer = match mat.scope {
                 Some(scope @ InjectionScope::Match { .. }) if mat.last_match => {
                     combined_injections.remove(&scope).unwrap_or_else(|| {
-                        self.init_injection(
-                            layer,
-                            mat.language,
-                            reused_injection.clone(),
-                            combined_scope,
-                        )
+                        self.init_injection(layer, mat.language, reused_injection, combined_scope)
                     })
                 }
                 Some(scope) => match combined_injections.get(&scope) {
@@ -586,14 +577,11 @@ impl Syntax {
                     None => {
                         // Bind to the layer of the pattern's retained injections, if any.
                         let injection_layer = match preseeded.remove(&scope) {
-                            Some(existing) => {
-                                self.layer_mut(existing).flags.reused = true;
-                                existing
-                            }
+                            Some(existing) => existing,
                             None => self.init_injection(
                                 layer,
                                 mat.language,
-                                reused_injection.clone(),
+                                reused_injection,
                                 combined_scope,
                             ),
                         };
@@ -601,32 +589,14 @@ impl Syntax {
                         injection_layer
                     }
                 },
-                None => self.init_injection(
-                    layer,
-                    mat.language,
-                    reused_injection.clone(),
-                    combined_scope,
-                ),
+                None => self.init_injection(layer, mat.language, reused_injection, combined_scope),
             };
-            let mut layer_data = self.layer_mut(layer);
-            if layer_data.flags.reused {
-                layer_data.flags.modified |= reused_injection.as_ref().is_none_or(|injection| {
-                    injection.matched_node_range != matched_node_range || injection.layer != layer
-                });
-            } else if let Some(reused_injection) = reused_injection {
-                layer_data.flags.reused = true;
-                layer_data.flags.modified = true;
-                let reused_parse_tree = self.layer(reused_injection.layer).tree().cloned();
-                layer_data = self.layer_mut(layer);
-                layer_data.parse_tree = reused_parse_tree;
-            }
 
             let old_len = injections.len();
-            for range in &new_ranges {
+            for range in intersect_ranges(mat.include_children, mat.node, &parent_ranges) {
                 injections.push(Injection {
-                    range: range.clone(),
+                    range,
                     layer,
-                    matched_node_range: matched_node_range.clone(),
                     pattern_range: mat.extent.clone(),
                 });
             }
@@ -636,26 +606,32 @@ impl Syntax {
             }
         }
 
-        // Any remaining injections which were not reused should have their layers marked as
-        // modified. These layers might have a new set of ranges (if they were visited) and so
-        // their trees need to be re-parsed.
-        for old_injection in old_injections {
-            self.layer_mut(old_injection.layer).flags.modified = true;
-        }
-
         // Stitch the retained injections back around the re-queried span.
         let mut final_injections = retained_prefix;
         final_injections.append(&mut injections);
         final_injections.extend(retained_suffix);
 
-        // Rebuild every referenced layer's included ranges from the final list and queue
-        // the layers that have not been visited yet.
-        // The ranges must mirror this layer's injections and stay sorted even when precedence reordered the
-        // matches above -
-        for injection in &final_injections {
+        debug_assert!(
+            final_injections
+                .windows(2)
+                .all(|pair| pair[0].range.end <= pair[1].range.start),
+            "injections must stay sorted and non-overlapping after splicing: {final_injections:?}"
+        );
+        let layer_data = &mut self.layer_mut(layer);
+        layer_data.ranges = parent_ranges;
+        layer_data.parse_tree = Some(parse_tree);
+        layer_data.injections = final_injections;
+        self.update_children(layer, &mut parse_layer);
+    }
+
+    /// Rebuilds the included ranges of the layer's children from its injections and queues
+    /// children that haven't been visited yet.
+    fn update_children(&mut self, layer: Layer, parse_layer: &mut impl FnMut(Layer)) {
+        let injections = take(&mut self.layer_mut(layer).injections);
+        for injection in &injections {
             self.layer_mut(injection.layer).ranges.clear();
         }
-        for injection in &final_injections {
+        for injection in &injections {
             let child = self.layer_mut(injection.layer);
             child.ranges.push(tree_sitter::Range::new(
                 tree_sitter::Point::ZERO,
@@ -668,105 +644,29 @@ impl Syntax {
                 parse_layer(injection.layer);
             }
         }
-
-        debug_assert!(
-            final_injections
-                .windows(2)
-                .all(|pair| pair[0].range.end <= pair[1].range.start),
-            "injections must stay sorted and non-overlapping after splicing: {final_injections:?}"
-        );
-        let layer_data = &mut self.layer_mut(layer);
-        layer_data.ranges = parent_ranges;
-        layer_data.parse_tree = Some(parse_tree);
-        layer_data.injections = final_injections;
+        self.layer_mut(layer).injections = injections;
     }
 
-    /// Maps the layers injection ranges through edits to enable incremental re-parsing.
-    pub(crate) fn map_injections(
-        &mut self,
-        layer: Layer,
-        // TODO: drop this parameter?
-        offset: Option<i32>,
-        mut edits: &[tree_sitter::InputEdit],
-    ) {
-        if edits.is_empty() && offset.unwrap_or(0) == 0 {
+    /// Maps the layer's injections through the edits. Injections no edit touched just shift.
+    /// The others are approximate until the next parse re-queries them.
+    pub(crate) fn map_injections(&mut self, layer: Layer, map: &EditMap) {
+        let injections = &self.layer(layer).injections;
+        let end = injections
+            .iter()
+            .map(|injection| injection.pattern_range.end)
+            .max();
+        if map
+            .edits
+            .first()
+            .is_none_or(|edit| end.is_none_or(|end| end < edit.start_byte))
+        {
             return;
         }
-        let layer_data = self.layer_mut(layer);
-        // Unlike the ranges, the extents overlap across entries, so they cannot share the
-        // sequential pass below. They only steer reuse and narrowing, so map each one conservatively.
-        for injection in &mut layer_data.injections {
-            injection.matched_node_range = map_pos_down(injection.matched_node_range.start, edits)
-                ..map_pos_up(injection.matched_node_range.end, edits);
-            injection.pattern_range = map_pos_down(injection.pattern_range.start, edits)
-                ..map_pos_up(injection.pattern_range.end, edits);
+        for injection in &mut self.layer_mut(layer).injections {
+            injection.range = map.down(injection.range.start)..map.up(injection.range.end);
+            injection.pattern_range =
+                map.down(injection.pattern_range.start)..map.up(injection.pattern_range.end);
         }
-        let first_relevant_injection = layer_data
-            .injections
-            .partition_point(|injection| injection.range.end < edits[0].start_byte);
-        if first_relevant_injection == layer_data.injections.len() {
-            return;
-        }
-        let mut offset = if let Some(offset) = offset {
-            let first_relevant_edit = edits.partition_point(|edit| {
-                (edit.old_end_byte as i32) < (layer_data.ranges[0].end_byte as i32 - offset)
-            });
-            edits = &edits[first_relevant_edit..];
-            offset
-        } else {
-            0
-        };
-        // injection ranges and edits are non-overlapping and sorted so we can
-        // map the ranges in O(M+N) instead of O(NM)
-        let mut edits = edits.iter().peekable();
-        let mut injections = take(&mut layer_data.injections);
-        for injection in &mut injections[first_relevant_injection..] {
-            let flags = &mut self.layer_mut(injection.layer).flags;
-            let injection_range = &mut injection.range;
-
-            while let Some(edit) = edits.next_if(|edit| edit.old_end_byte < injection_range.start) {
-                offset += edit.offset();
-            }
-            // a later range must not erase an earlier range's move
-            flags.moved |= offset != 0;
-            let mut mapped_start = (injection_range.start as i32 + offset) as u32;
-            if let Some(edit) = edits.next_if(|edit| edit.old_end_byte <= injection_range.end) {
-                if edit.start_byte < injection_range.start {
-                    flags.moved = true;
-                    mapped_start = (edit.new_end_byte as i32 + offset) as u32;
-                } else {
-                    flags.modified = true;
-                }
-                offset += edit.offset();
-                while let Some(edit) =
-                    edits.next_if(|edit| edit.old_end_byte <= injection_range.end)
-                {
-                    offset += edit.offset();
-                }
-            }
-            let mut mapped_end = (injection_range.end as i32 + offset) as u32;
-            if let Some(edit) = edits
-                .peek()
-                .filter(|edit| edit.start_byte <= injection_range.end)
-            {
-                flags.modified = true;
-
-                if edit.start_byte < injection_range.start {
-                    mapped_start = (edit.new_end_byte as i32 + offset) as u32;
-                    mapped_end = mapped_start;
-                }
-            }
-            *injection_range = mapped_start..mapped_end;
-            // Around an edit straddling a range boundary the conservatively mapped extents
-            // can come out narrower than the exactly mapped range, widening them is safe.
-            let matched_node_range = &mut injection.matched_node_range;
-            matched_node_range.start = matched_node_range.start.min(injection.range.start);
-            matched_node_range.end = matched_node_range.end.max(injection.range.end);
-            injection.pattern_range.start =
-                injection.pattern_range.start.min(matched_node_range.start);
-            injection.pattern_range.end = injection.pattern_range.end.max(matched_node_range.end);
-        }
-        self.layer_mut(layer).injections = injections;
     }
 
     fn init_injection(
@@ -801,47 +701,26 @@ impl Syntax {
         }
     }
 
-    // TODO: only reuse if same pattern is matched (only a changed segmentation is caught)
+    /// Picks the old injection whose layer the new match inherits. A bad pick only costs a
+    /// fresh parse.
     fn reuse_injection(
         &mut self,
         language: Language,
         new_range: &Range,
         // The layer already chosen for this match's combined scope, if any.
         combined_layer: Option<Layer>,
-        new_ranges: &[Range],
         injections: &mut Peekable<impl Iterator<Item = Injection>>,
     ) -> Option<Injection> {
-        while let Some(skipped) =
-            injections.next_if(|injection| injection.range.end <= new_range.start)
-        {
-            // If the layer had an injection and now does not have the injection, consider the
-            // skipped layer to be modified so that its tree is re-parsed. It must be re-parsed
-            // since the skipped layer now has a different set of ranges than it used to. Note
-            // that the layer isn't marked as `touched` so it could be discarded if the layer
-            // is not ever visited.
-            self.layer_mut(skipped.layer).flags.modified = true;
-        }
-        let first = injections.next_if(|injection| {
+        while injections
+            .next_if(|injection| injection.range.end <= new_range.start)
+            .is_some()
+        {}
+        injections.next_if(|injection| {
             injection.range.start < new_range.end
                 && self.layer(injection.layer).language == language
                 && (!self.layer(injection.layer).flags.reused
                     || combined_layer == Some(injection.layer))
-        })?;
-        // A node crossing gaps in the parent's ranges is split into several injections.
-        // If segmentation changed, the layer's included ranges also changed.
-        let mut segments_match = new_ranges.first() == Some(&first.range);
-        let mut old_segments = 1;
-        while let Some(next) = injections.next_if(|injection| {
-            injection.layer == first.layer
-                && injection.matched_node_range == first.matched_node_range
-        }) {
-            segments_match &= new_ranges.get(old_segments) == Some(&next.range);
-            old_segments += 1;
-        }
-        if !segments_match || old_segments != new_ranges.len() {
-            self.layer_mut(first.layer).flags.modified = true;
-        }
-        Some(first)
+        })
     }
 }
 
@@ -976,44 +855,54 @@ fn intersect_ranges_impl(
     })
 }
 
-/// Maps a position through `edits` (sorted, non-overlapping, old coordinates), rounding
-/// down to an edit's mapped start when the position falls inside that edit. Together with
-/// [`map_pos_up`] this yields a conservative (containing) mapping for a range.
-fn map_pos_down(pos: u32, edits: &[tree_sitter::InputEdit]) -> u32 {
-    let mut offset = 0i32;
-    for edit in edits {
-        if edit.old_end_byte <= pos {
-            // A pure insertion exactly at `pos` may join the node whose extent starts
-            // here (e.g. typing in front of a fence's language marker); keep the boundary
-            // at the insertion's start so the mapped extent still contains the node.
-            if edit.old_end_byte == pos && edit.start_byte == pos {
-                break;
-            }
-            offset += edit.offset();
-        } else {
-            if edit.start_byte < pos {
-                return (edit.start_byte as i32 + offset) as u32;
-            }
-            break;
-        }
-    }
-    (pos as i32 + offset) as u32
+/// Maps old positions through `edits`. A position inside an edit snaps to the start (`down`)
+/// or end (`up`) of its replacement, so mapped ranges never shrink.
+pub(crate) struct EditMap<'a> {
+    edits: &'a [tree_sitter::InputEdit],
+    /// `offsets[i]` is the total size change of the edits before edit `i`. The last entry
+    /// covers all edits.
+    offsets: Vec<i32>,
 }
 
-/// See [`map_pos_down`]; rounds up to the edit's mapped end instead.
-fn map_pos_up(pos: u32, edits: &[tree_sitter::InputEdit]) -> u32 {
-    let mut offset = 0i32;
-    for edit in edits {
-        if edit.old_end_byte <= pos {
-            offset += edit.offset();
-        } else {
-            if edit.start_byte < pos {
-                return (edit.new_end_byte as i32 + offset) as u32;
-            }
-            break;
-        }
+impl<'a> EditMap<'a> {
+    pub(crate) fn new(edits: &'a [tree_sitter::InputEdit]) -> Self {
+        let offsets = iter::once(0)
+            .chain(edits.iter().scan(0, |offset, edit| {
+                *offset += edit.offset();
+                Some(*offset)
+            }))
+            .collect();
+        Self { edits, offsets }
     }
-    (pos as i32 + offset) as u32
+
+    fn map(&self, pos: u32, up: bool) -> u32 {
+        let i = self.edits.partition_point(|edit| edit.old_end_byte < pos);
+        let pos = match self.edits.get(i) {
+            Some(edit) if edit.start_byte <= pos && up => edit.new_end_byte,
+            Some(edit) if edit.start_byte <= pos => edit.start_byte,
+            _ => pos,
+        };
+        (pos as i32 + self.offsets[i]) as u32
+    }
+
+    pub(crate) fn down(&self, pos: u32) -> u32 {
+        self.map(pos, false)
+    }
+
+    pub(crate) fn up(&self, pos: u32) -> u32 {
+        self.map(pos, true)
+    }
+
+    /// The text each edit inserted, in new coordinates.
+    pub(crate) fn edited_regions(&self) -> Vec<Range> {
+        self.edits
+            .iter()
+            .zip(&self.offsets)
+            .map(|(edit, offset)| {
+                (edit.start_byte as i32 + offset) as u32..(edit.new_end_byte as i32 + offset) as u32
+            })
+            .collect()
+    }
 }
 
 /// Grows `span` to cover `range`, returning whether it grew.
