@@ -1601,3 +1601,76 @@ fn node_ids(syntax: &Syntax, lang: Language) -> HashSet<usize> {
     walk(layer.parse_tree.as_ref().unwrap().root_node(), &mut ids);
     ids
 }
+
+/// Update-path benchmark, run with
+/// `cargo test --release -p tree-house bench_update -- --ignored --nocapture`.
+/// `BENCH_N` and `BENCH_FRAMES` override the iteration counts.
+#[test]
+#[ignore]
+fn bench_update() {
+    let loader = TestLanguageLoader::new();
+    let lang = loader.get("markdown");
+    let env = |name: &str, default: u32| {
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
+    };
+    let n = env("BENCH_N", 200);
+    // Alternate between inserts and deletes at `pos`
+    let toggle = |syntax: &mut Syntax, text: &mut String, pos: u32| {
+        let start = std::time::Instant::now();
+        for i in 0..n {
+            let e = if i % 2 == 0 {
+                text.insert(pos as usize, 'y');
+                edit(pos, pos, pos + 1)
+            } else {
+                text.remove(pos as usize);
+                edit(pos, pos + 1, pos)
+            };
+            syntax
+                .update(text.as_str().into(), PARSE_TIMEOUT, &[e], &loader)
+                .unwrap();
+        }
+        start.elapsed() / n
+    };
+
+    let mut text = String::new();
+    for i in 0..300 {
+        text.push_str(&format!(
+            "## Section {i}\n\nsome paragraph text with `inline code` and *emph*\n\n\
+             ```rust\nfn f{i}(x: u32) -> u32 {{\n    x + {i}\n}}\n```\n\n"
+        ));
+    }
+    eprintln!("doc: {} bytes, 300 rust fences", text.len());
+    let mut syntax = Syntax::new(text.as_str().into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+    let pos = text.find("x + 150").unwrap() as u32;
+    eprintln!(
+        "fence edit: {:?}/update",
+        toggle(&mut syntax, &mut text, pos)
+    );
+    let pos = text.find("some paragraph text with `inline code` and *emph*\n\n```rust\nfn f150");
+    let pos = pos.unwrap() as u32;
+    eprintln!(
+        "paragraph edit: {:?}/update",
+        toggle(&mut syntax, &mut text, pos)
+    );
+
+    // construct a highlighter and advance it over a 4KB viewport
+    let rope = ropey::Rope::from_str(&text);
+    let viewport_start = text.find("## Section 150").unwrap() as u32;
+    let viewport = viewport_start..(viewport_start + 4000).min(text.len() as u32);
+    let frames = env("BENCH_FRAMES", 500);
+    let start = std::time::Instant::now();
+    let mut events = 0;
+    for _ in 0..frames {
+        let mut highlighter = Highlighter::new(&syntax, rope.slice(..), &loader, viewport.clone());
+        while highlighter.next_event_offset() != u32::MAX {
+            events += highlighter.advance().1.count();
+        }
+    }
+    eprintln!(
+        "render 4KB viewport: {:?}/frame ({events} events)",
+        start.elapsed() / frames
+    );
+}
