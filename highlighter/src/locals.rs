@@ -1,6 +1,7 @@
 use std::{
     borrow::Cow,
     ops::{Index, IndexMut},
+    sync::Arc,
 };
 
 use hashbrown::HashMap;
@@ -8,6 +9,7 @@ use kstring::KString;
 use ropey::RopeSlice;
 use tree_sitter::{Capture, InactiveQueryCursor, Node, Pattern, Query};
 
+use crate::highlighter::Highlight;
 use crate::injections_query::{absorb, grow_spans, intersects_any, match_extent, EditMap};
 use crate::{LanguageConfig, LanguageLoader, Layer, Range, Syntax, TREE_SITTER_MATCH_LIMIT};
 
@@ -27,6 +29,8 @@ pub struct Locals {
     /// The captures `scopes` was built from, so a narrowed re-run can update them. `None` when
     /// they no longer match the tree.
     captures: Option<Vec<LocalCapture>>,
+    /// Snapshot used to filter definitions when these scopes were built.
+    configured_definitions: Option<Arc<HashMap<Capture, Highlight>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -52,11 +56,19 @@ impl Default for Locals {
         Self {
             scopes,
             captures: None,
+            configured_definitions: None,
         }
     }
 }
 
 impl Locals {
+    pub(crate) fn configuration_changed(&self, config: &LanguageConfig) -> bool {
+        let current = config.injection_query.local_definition_captures.load();
+        self.configured_definitions
+            .as_ref()
+            .is_none_or(|previous| !Arc::ptr_eq(previous, &current))
+    }
+
     fn push(&mut self, scope: ScopeData) -> Scope {
         let new_scope_id = Scope(self.scopes.len() as u32);
         let parent = scope
@@ -254,8 +266,12 @@ impl Syntax {
         else {
             return;
         };
-        let definition_captures = injection_query.local_definition_captures.load();
+        let definition_captures = injection_query.local_definition_captures.load_full();
         if definition_captures.is_empty() {
+            layer_data.locals = Locals {
+                configured_definitions: Some(definition_captures),
+                ..Locals::default()
+            };
             return;
         }
 
@@ -331,6 +347,7 @@ impl Syntax {
             // considered during parsing.
         }
         locals.captures = Some(captures);
+        locals.configured_definitions = Some(definition_captures);
 
         layer_data.locals = locals;
     }

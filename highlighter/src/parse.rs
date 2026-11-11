@@ -86,7 +86,13 @@ impl Syntax {
                 |layer| queue.push(layer),
                 spans.clone(),
             );
-            if reparse {
+            // A theme change can enable skipped definitions without changing the tree. The scopes
+            // are then rebuilt from the cached captures.
+            let layer_data = self.layer(layer);
+            let locals_changed = loader
+                .get_config(layer_data.language)
+                .is_some_and(|config| layer_data.locals.configuration_changed(config));
+            if reparse || locals_changed {
                 self.run_local_query(layer, &map, source, loader, spans);
             } else if moved {
                 self.layer_mut(layer).locals.map(&map);

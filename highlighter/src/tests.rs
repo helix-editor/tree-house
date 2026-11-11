@@ -1866,3 +1866,46 @@ fn multi_edit_sweep() {
     }
     eprintln!("steps where tree-sitter diverged from a fresh parse: {diverged}");
 }
+
+#[test]
+fn retained_locals_follow_config() {
+    let text = "\n```rust\nfn f(alpha: u32) { alpha; }\n```\n\ntext\n";
+    // No edits, an edit after the layer, and an edit that moves the layer.
+    for position in [None, Some(text.len()), Some(0)] {
+        let loader = TestLanguageLoader::new();
+        let lang = loader.get("markdown");
+        let config = loader.get_config(loader.get("rust")).unwrap();
+        config.configure(|_| None);
+        let mut syntax = Syntax::new(text.into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+        let mut updated = text.to_owned();
+        let edits: Vec<_> = position
+            .into_iter()
+            .map(|pos| {
+                updated.insert(pos, 'x');
+                edit(pos as u32, pos as u32, pos as u32 + 1)
+            })
+            .collect();
+        for (step, enabled) in [true, true, false, true].into_iter().enumerate() {
+            config.configure(|scope| {
+                enabled.then(|| {
+                    Highlight::new(
+                        loader
+                            .test_theme
+                            .borrow_mut()
+                            .insert_full(scope.to_owned())
+                            .0 as u32,
+                    )
+                })
+            });
+            let edits = if step == 0 { edits.as_slice() } else { &[] };
+            let before = root_ids(&syntax);
+            syntax
+                .update(updated.as_str().into(), PARSE_TIMEOUT, edits, &loader)
+                .unwrap();
+            if edits.is_empty() {
+                assert_eq!(root_ids(&syntax), before, "a layer was re-parsed");
+            }
+            assert_matches_fresh(&loader, lang, &syntax, &updated);
+        }
+    }
+}
