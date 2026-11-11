@@ -46,6 +46,13 @@ impl Tree {
         let ptr = unsafe { ts_tree_get_changed_ranges(self.ptr, other.ptr, &mut len) };
         RangeArray { ptr, len }
     }
+
+    /// The included ranges this tree was parsed with.
+    pub fn included_ranges(&self) -> RangeArray {
+        let mut len: u32 = 0;
+        let ptr = unsafe { ts_tree_included_ranges(self.ptr, &mut len) };
+        RangeArray { ptr, len }
+    }
 }
 
 /// An array of [`Range`]s allocated by tree-sitter on the caller's behalf.
@@ -151,6 +158,73 @@ extern "C" {
         new_tree: NonNull<SyntaxTreeData>,
         length: *mut u32,
     ) -> *mut Range;
+    /// Get the array of included ranges that was used to parse the syntax tree.
+    /// The caller must free the returned array.
+    fn ts_tree_included_ranges(self_: NonNull<SyntaxTreeData>, length: *mut u32) -> *mut Range;
     /// The deallocator tree-sitter currently uses (see `ts_set_allocator`).
     static mut ts_current_free: unsafe extern "C" fn(ptr: *mut c_void);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use crate::{Grammar, Input, InputEdit, Parser, Point, Range};
+
+    struct StrInput<'a> {
+        src: &'a str,
+        cursor: &'a str,
+    }
+
+    impl<'a> Input for StrInput<'a> {
+        type Cursor = &'a str;
+
+        fn cursor_at(&mut self, _offset: u32) -> &mut &'a str {
+            self.cursor = self.src;
+            &mut self.cursor
+        }
+
+        fn eq(&mut self, r1: std::ops::Range<u32>, r2: std::ops::Range<u32>) -> bool {
+            let b = self.src.as_bytes();
+            b[r1.start as usize..r1.end as usize] == b[r2.start as usize..r2.end as usize]
+        }
+    }
+
+    fn python_grammar() -> Grammar {
+        let so = Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-grammars/python/python.so");
+        unsafe { Grammar::new("python", &so) }.expect("python grammar")
+    }
+
+    fn byte_ranges(ranges: &[Range]) -> Vec<std::ops::Range<u32>> {
+        ranges.iter().map(|r| r.start_byte..r.end_byte).collect()
+    }
+
+    #[test]
+    fn included_ranges_follow_edits() {
+        let src = "x = 1\ny = 2\nz = 3\n";
+        let mut parser = Parser::new();
+        parser.set_grammar(python_grammar()).unwrap();
+        parser
+            .set_included_ranges(&[
+                Range::new(Point::ZERO, Point::ZERO, 0, 6),
+                Range::new(Point::ZERO, Point::ZERO, 12, 18),
+            ])
+            .unwrap();
+        let input = StrInput { src, cursor: src };
+        let mut tree = parser.parse(input, None).unwrap();
+        assert_eq!(byte_ranges(&tree.included_ranges()), [0..6, 12..18]);
+
+        let edit = |start_byte, old_end_byte, new_end_byte| InputEdit {
+            start_byte,
+            old_end_byte,
+            new_end_byte,
+            start_point: Point::ZERO,
+            old_end_point: Point::ZERO,
+            new_end_point: Point::ZERO,
+        };
+        tree.edit(&edit(8, 8, 10));
+        assert_eq!(byte_ranges(&tree.included_ranges()), [0..6, 14..20]);
+        tree.edit(&edit(12, 16, 12));
+        assert_eq!(byte_ranges(&tree.included_ranges()), [0..6, 12..16]);
+    }
 }

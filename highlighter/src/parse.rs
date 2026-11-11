@@ -150,27 +150,16 @@ impl LayerData {
             .set_included_ranges(&self.ranges)
             .map_err(|_| Error::InvalidRanges)?;
 
-        // HACK:
-        // This is a workaround for a bug within the lexer (in the C library) or maybe within
-        // tree-sitter-markdown which needs more debugging. When adding a new range to a combined
-        // injection and passing the old tree, if the old tree doesn't already cover a wider range
-        // than the newly added range, some assumptions are violated in the lexer and it tries to
-        // access some invalid memory, resulting in a segfault. This workaround avoids that
-        // situation by avoiding passing the old tree when the old tree's range doesn't cover the
-        // total range of `self.ranges`.
-        //
-        // See <https://github.com/helix-editor/helix/pull/12972#issuecomment-2725410409>.
+        // An old tree may only seed the parse under exactly the included ranges it was parsed
+        // with (as moved by the edits). Otherwise tree-sitter reuses subtrees and resumes
+        // external scanner state in contexts they were not produced in, which misparses and
+        // has crashed tree-sitter-markdown's block scanner.
         let tree = self.parse_tree.as_ref().filter(|tree| {
-            let included_ranges_range = self.ranges.first().map(|r| r.start_byte).unwrap_or(0)
-                ..self.ranges.last().map(|r| r.end_byte).unwrap_or(u32::MAX);
-            // Allow re-parsing the root layer even though the range is larger. The root always
-            // covers `0..u32::MAX`:
-            if included_ranges_range == (0..u32::MAX) {
-                return true;
-            }
-            let tree_range = tree.root_node().byte_range();
-            tree_range.start <= included_ranges_range.start
-                && tree_range.end >= included_ranges_range.end
+            let included = tree.included_ranges();
+            included.len() == self.ranges.len()
+                && included.iter().zip(&self.ranges).all(|(old, new)| {
+                    old.start_byte == new.start_byte && old.end_byte == new.end_byte
+                })
         });
 
         let new_tree = parser

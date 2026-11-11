@@ -14,7 +14,7 @@ use crate::config::{LanguageConfig, LanguageLoader};
 use crate::fixtures::{check_highlighter_fixture, check_injection_fixture};
 use crate::highlighter::{Highlight, HighlightEvent, Highlighter};
 use crate::injections_query::InjectionLanguageMarker;
-use crate::{Language, Layer, Syntax};
+use crate::{Language, Layer, LayerData, Syntax};
 
 const PARSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -880,6 +880,149 @@ fn render(
     )
 }
 
+/// Applies `edits` to `syntax` and checks the result against a fresh parse, like
+/// [`assert_matches_fresh`] but also comparing the layers' trees.
+#[track_caller]
+fn update_matches_fresh(
+    loader: &TestLanguageLoader,
+    lang: Language,
+    syntax: &mut Syntax,
+    edits: &[InputEdit],
+    text: &str,
+    diverged: &mut usize,
+) {
+    let before = syntax.clone();
+    match syntax.update(text.into(), PARSE_TIMEOUT, edits, loader) {
+        Ok(()) => {}
+        // Slow machines (valgrind) may time out, start over from a fresh parse.
+        Err(crate::Error::Timeout) => {
+            *syntax = Syntax::new(text.into(), lang, PARSE_TIMEOUT, loader).unwrap()
+        }
+        Err(err) => panic!("update to {text:?} failed: {err}"),
+    }
+    let fresh = Syntax::new(text.into(), lang, PARSE_TIMEOUT, loader).unwrap();
+    let trees_match = syntax.layers.iter().all(|(_, layer)| {
+        fresh_layer_tree(&fresh, layer)
+            .is_none_or(|fresh_tree| layer.tree().map(tree_sexp) == Some(tree_sexp(fresh_tree)))
+    });
+    if trees_match && render(loader, syntax, text) == render(loader, &fresh, text) {
+        return;
+    }
+    if !tree_sitter_diverged(loader, &before, edits, syntax, &fresh, text) {
+        assert_matches_fresh(loader, lang, syntax, text);
+        panic!("layer trees diverged from a fresh parse of {text:?}");
+    }
+    *diverged += 1;
+    *syntax = fresh;
+}
+
+/// The tree of `fresh`'s layer with the same language and ranges as `layer`.
+fn fresh_layer_tree<'a>(fresh: &'a Syntax, layer: &LayerData) -> Option<&'a tree_sitter::Tree> {
+    fresh
+        .layers
+        .iter()
+        .find(|(_, other)| other.language == layer.language && other.ranges == layer.ranges)
+        .and_then(|(_, other)| other.tree())
+}
+
+/// The kinds and byte ranges of all of `tree`'s nodes.
+fn tree_sexp(tree: &tree_sitter::Tree) -> String {
+    fn sexp(node: &tree_sitter::Node, out: &mut String) {
+        out.push_str(&format!("({} {:?}", node.kind(), node.byte_range()));
+        for child in node.children() {
+            sexp(&child, out);
+        }
+        out.push(')');
+    }
+    let mut out = String::new();
+    sexp(&tree.root_node(), &mut out);
+    out
+}
+
+/// Whether some layer's tree differs from the fresh parse's tree for the same ranges.
+fn tree_sitter_diverged(
+    loader: &TestLanguageLoader,
+    before: &Syntax,
+    edits: &[InputEdit],
+    syntax: &Syntax,
+    fresh: &Syntax,
+    text: &str,
+) -> bool {
+    let mut diverged = HashSet::new();
+    for (idx, layer) in syntax.layers.iter() {
+        let (Some(tree), Some(fresh_tree)) = (layer.tree(), fresh_layer_tree(fresh, layer)) else {
+            continue;
+        };
+        let incremental = tree_sexp(tree);
+        if incremental == tree_sexp(fresh_tree) {
+            continue;
+        }
+        let Some(old) = before.layers.get(idx) else {
+            return false;
+        };
+        let Some(mut old_tree) = old.tree().cloned() else {
+            return false;
+        };
+        for edit in edits.iter().rev() {
+            old_tree.edit(edit);
+        }
+        // Only an old tree parsed under the same ranges can seed the re-parse.
+        let old_ranges = old_tree.included_ranges();
+        if old_ranges.len() != layer.ranges.len()
+            || old_ranges
+                .iter()
+                .zip(&layer.ranges)
+                .any(|(old, new)| old.start_byte != new.start_byte || old.end_byte != new.end_byte)
+        {
+            return false;
+        }
+        // A layer no edit touched keeps its old tree. Error recovery can parse the same text
+        // differently at another offset, so that tree may differ from a fresh parse.
+        let untouched = old.ranges.iter().all(|range| {
+            edits.iter().all(|edit| {
+                edit.old_end_byte < range.start_byte || edit.start_byte > range.end_byte
+            })
+        });
+        if !untouched || tree_sexp(&old_tree) != incremental {
+            let mut parser = tree_sitter::Parser::new();
+            parser
+                .set_grammar(loader.get_config(layer.language).unwrap().grammar)
+                .unwrap();
+            parser.set_included_ranges(&layer.ranges).unwrap();
+            let reparsed = parser.parse(ropey::RopeSlice::from(text), Some(&old_tree));
+            if reparsed.is_none_or(|reparsed| tree_sexp(&reparsed) != incremental) {
+                return false;
+            }
+        }
+        diverged.insert(idx);
+    }
+    let in_diverged_subtree = |mut layer: Layer| loop {
+        if diverged.contains(&layer.idx()) {
+            return true;
+        }
+        match syntax.layer(layer).parent {
+            Some(parent) => layer = parent,
+            None => return false,
+        }
+    };
+    let injected = |syntax: &Syntax, layer: &LayerData| -> Vec<_> {
+        let language = |layer| syntax.layer(layer).language;
+        let injections = layer.injections.iter();
+        injections
+            .map(|injection| (injection.range.clone(), language(injection.layer)))
+            .collect()
+    };
+    !diverged.is_empty()
+        && syntax.layers.iter().all(|(idx, layer)| {
+            in_diverged_subtree(Layer(idx as u32))
+                || fresh.layers.iter().any(|(_, other)| {
+                    other.language == layer.language
+                        && other.ranges == layer.ranges
+                        && injected(fresh, other) == injected(syntax, layer)
+                })
+        })
+}
+
 /// A markdown document with multiple nested layers
 const LAYERED_DOC: &str = "\
 # Title
@@ -1010,6 +1153,7 @@ fn edit_sweep() {
     let loader = TestLanguageLoader::new();
     let lang = loader.get("markdown");
     let mut rng = Lcg(0xC0FFEE);
+    let mut diverged = 0;
     const BLOCKS: &[&str] = &[
         "plain paragraph text\n",
         "# heading\n",
@@ -1019,14 +1163,14 @@ fn edit_sweep() {
         "<!-- two -->\n",
         "```\nplain fence\n```\n",
     ];
-    for doc_idx in 0..50 {
+    for _ in 0..150 {
         let mut text = String::new();
         for _ in 0..3 + rng.next(4) {
             text.push_str(BLOCKS[rng.next(BLOCKS.len())]);
             text.push('\n');
         }
         let mut syntax = Syntax::new(text.as_str().into(), lang, PARSE_TIMEOUT, &loader).unwrap();
-        for round in 0..5 {
+        for _ in 0..5 {
             // Generate 1-3 non-overlapping ascending edits in old-text coordinates.
             let mut edits = Vec::new();
             let mut after = text.clone();
@@ -1074,13 +1218,11 @@ fn edit_sweep() {
             if edits.is_empty() {
                 continue;
             }
-            syntax
-                .update(after.as_str().into(), PARSE_TIMEOUT, &edits, &loader)
-                .unwrap_or_else(|err| panic!("doc {doc_idx} round {round}: {err}"));
-            assert_matches_fresh(&loader, lang, &syntax, &after);
+            update_matches_fresh(&loader, lang, &mut syntax, &edits, &after, &mut diverged);
             text = after;
         }
     }
+    eprintln!("steps where tree-sitter diverged from a fresh parse: {diverged}");
 }
 
 #[test]
@@ -1324,4 +1466,138 @@ fn narrowed_query_combined_pattern() {
         )
         .unwrap();
     assert_matches_fresh(&loader, lang, &syntax, t1);
+}
+
+#[test]
+fn combined_layer_range_growth() {
+    let loader = TestLanguageLoader::new();
+    let lang = loader.get("rust");
+    // Two doc comments form one combined markdown layer. Adding a third one appends a new
+    // range to that layer beyond its old tree's span.
+    let t0 = "/// alpha\nfn a() {}\n\nfn pad() { let filler = 1; }\n\n/// beta\nfn b() {}\n";
+    let insert = "\n/// gamma\nfn c() {}\n";
+    let mut t1 = t0.to_owned();
+    t1.push_str(insert);
+    let pos = t0.len() as u32;
+    let mut syntax = Syntax::new(t0.into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+    syntax
+        .update(
+            t1.as_str().into(),
+            PARSE_TIMEOUT,
+            &[edit(pos, pos, pos + insert.len() as u32)],
+            &loader,
+        )
+        .unwrap();
+    assert_matches_fresh(&loader, lang, &syntax, &t1);
+}
+
+/// Randomized sweep over rust documents with doc comments and syntax errors.
+#[test]
+fn rust_edit_sweep() {
+    let loader = TestLanguageLoader::new();
+    let lang = loader.get("rust");
+    let mut rng = Lcg(0xFEEDFACE);
+    let mut diverged = 0;
+    const PIECES: &[&str] = &[
+        "/// alpha beta\n",
+        "/// `code` and *emph*\n",
+        "///\n",
+        "/// # heading\n",
+        "fn f() { let x = 1; }\n",
+        "\n",
+        "// plain comment\n",
+        "struct S;\n",
+    ];
+    const INSERTS: &[&str] = &[
+        "/// gamma\n",
+        "///x\n",
+        "/// ```\n/// let a = 1;\n/// ```\n",
+        "\n",
+        "fn g() {}\n",
+        "x",
+        "`",
+        "*",
+    ];
+    for _ in 0..60 {
+        let mut text = String::new();
+        for _ in 0..2 + rng.next(7) {
+            text.push_str(PIECES[rng.next(PIECES.len())]);
+        }
+        let mut syntax = Syntax::new(text.as_str().into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+        for _round in 0..6 {
+            let mut after = text.clone();
+            let e;
+            if rng.next(2) == 0 {
+                // insert a whole piece at a line boundary
+                let lines: Vec<usize> = std::iter::once(0)
+                    .chain(text.match_indices('\n').map(|(i, _)| i + 1))
+                    .collect();
+                let at = lines[rng.next(lines.len())];
+                let ins = INSERTS[rng.next(INSERTS.len())];
+                after.insert_str(at, ins);
+                e = edit(at as u32, at as u32, (at + ins.len()) as u32);
+            } else if text.len() > 8 {
+                // delete a small random range
+                let start = rng.next(text.len() - 4);
+                let len = 1 + rng.next(4).min(text.len() - start - 1);
+                after.replace_range(start..start + len, "");
+                e = edit(start as u32, (start + len) as u32, start as u32);
+            } else {
+                continue;
+            };
+            update_matches_fresh(&loader, lang, &mut syntax, &[e], &after, &mut diverged);
+            text = after;
+        }
+    }
+    eprintln!("steps where tree-sitter diverged from a fresh parse: {diverged}");
+}
+
+#[test]
+fn reparse_seeded_by_old_tree() {
+    let loader = TestLanguageLoader::new();
+    let markdown = loader.get("markdown");
+    let rust = loader.get("rust");
+    // An edit inside the fence re-parses the markdown and rust layers from their old trees.
+    let t0 = "# Title\n\n```rust\nfn f(x: u32) -> u32 {\n    x + 1\n}\n```\n\ntext\n";
+    let pos = t0.find("x + 1").unwrap();
+    let mut t1 = t0.to_owned();
+    t1.insert(pos, 'y');
+    let pos = pos as u32;
+    let mut syntax = Syntax::new(t0.into(), markdown, PARSE_TIMEOUT, &loader).unwrap();
+    let before = [markdown, rust].map(|lang| node_ids(&syntax, lang));
+    syntax
+        .update(
+            t1.as_str().into(),
+            PARSE_TIMEOUT,
+            &[edit(pos, pos, pos + 1)],
+            &loader,
+        )
+        .unwrap();
+    // A seeded re-parse reuses some of the old tree's nodes.
+    for (lang, old) in [markdown, rust].into_iter().zip(before) {
+        let new = node_ids(&syntax, lang);
+        assert_ne!(new, old, "the layer was not re-parsed");
+        assert!(
+            !new.is_disjoint(&old),
+            "the re-parse did not reuse the old tree"
+        );
+    }
+}
+
+/// The ids of all nodes in the `lang` layer's tree.
+fn node_ids(syntax: &Syntax, lang: Language) -> HashSet<usize> {
+    fn walk(node: tree_sitter::Node, ids: &mut HashSet<usize>) {
+        ids.insert(node.id());
+        for child in node.children() {
+            walk(child, ids);
+        }
+    }
+    let (_, layer) = syntax
+        .layers
+        .iter()
+        .find(|(_, layer)| layer.language == lang)
+        .unwrap();
+    let mut ids = HashSet::new();
+    walk(layer.parse_tree.as_ref().unwrap().root_node(), &mut ids);
+    ids
 }

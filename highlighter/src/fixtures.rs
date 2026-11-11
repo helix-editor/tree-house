@@ -195,6 +195,10 @@ pub fn highlighter_fixture(
     let ident = " ".repeat(comment_prefix.width());
     let mut highlighter = Highlighter::new(syntax, src, &loader, start as u32..);
     let mut pos = highlighter.next_event_offset();
+    // A document without any highlight events reports u32::MAX as the first offset.
+    if pos == u32::MAX {
+        pos = end as u32;
+    }
     let mut highlight_stack = Vec::new();
     let mut line_idx = src.byte_to_line(pos as usize);
     let mut line_start = src.line_to_byte(line_idx) as u32;
