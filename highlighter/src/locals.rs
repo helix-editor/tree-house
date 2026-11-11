@@ -106,6 +106,27 @@ impl Locals {
     }
 }
 
+#[cfg(test)]
+impl Locals {
+    pub(crate) fn dump(&self) -> Vec<String> {
+        self.scopes
+            .iter()
+            .map(|scope| {
+                let mut definitions: Vec<_> = scope
+                    .definitions
+                    .iter()
+                    .map(|(name, def)| format!("{name}@{:?}:{:?}", def.range, def.capture))
+                    .collect();
+                definitions.sort();
+                format!(
+                    "{:?} inherit={} parent={:?} children={:?} {definitions:?}",
+                    scope.range, scope.inherit, scope.parent, scope.children
+                )
+            })
+            .collect()
+    }
+}
+
 impl Index<Scope> for Locals {
     type Output = ScopeData;
 

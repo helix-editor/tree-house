@@ -831,7 +831,7 @@ fn edit(start_byte: u32, old_end_byte: u32, new_end_byte: u32) -> InputEdit {
     }
 }
 
-/// Oracle for incremental updates: the updated syntax must have the same layers,
+/// Oracle for incremental updates: the updated syntax must have the same layers, locals,
 /// injections and highlights as a fresh parse of `text`.
 #[track_caller]
 fn assert_matches_fresh(loader: &TestLanguageLoader, lang: Language, syntax: &Syntax, text: &str) {
@@ -851,7 +851,7 @@ fn assert_matches_fresh(loader: &TestLanguageLoader, lang: Language, syntax: &Sy
     );
 }
 
-/// The layers, injections and highlights of `syntax`.
+/// The layers (with their locals), injections and highlights of `syntax`.
 fn render(
     loader: &TestLanguageLoader,
     syntax: &Syntax,
@@ -868,7 +868,11 @@ fn render(
                 .iter()
                 .map(|r| r.start_byte..r.end_byte)
                 .collect();
-            format!("{} {ranges:?}", lang_name(layer.language))
+            format!(
+                "{} {ranges:?} {:?}",
+                lang_name(layer.language),
+                layer.locals.dump()
+            )
         })
         .collect();
     layers.sort();
@@ -1019,6 +1023,7 @@ fn tree_sitter_diverged(
                     other.language == layer.language
                         && other.ranges == layer.ranges
                         && injected(fresh, other) == injected(syntax, layer)
+                        && other.locals.dump() == layer.locals.dump()
                 })
         })
 }
