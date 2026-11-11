@@ -10,6 +10,8 @@ fn main() {
     let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"));
     let include_path = manifest_path.join("vendor/include");
     let src_path = manifest_path.join("vendor/src");
+    let ext_path = manifest_path.join("ext/query_ext.c");
+    println!("cargo:rerun-if-changed={}", ext_path.to_str().unwrap());
     for entry in fs::read_dir(&src_path).unwrap() {
         let entry = entry.unwrap();
         let path = src_path.join(entry.file_name());
@@ -27,6 +29,6 @@ fn main() {
         .define("_POSIX_C_SOURCE", "200112L")
         .define("_DEFAULT_SOURCE", None)
         .warnings(false)
-        .file(src_path.join("lib.c"))
+        .file(ext_path)
         .compile("tree-sitter");
 }

@@ -108,6 +108,7 @@ impl Syntax {
             injections: Vec::new(),
             parent: None,
             locals: Locals::default(),
+            combined_scope: None,
         };
         let mut layers = Slab::with_capacity(32);
         let root = layers.insert(root_layer);
@@ -209,6 +210,10 @@ pub struct Injection {
     pub range: Range,
     pub layer: Layer,
     matched_node_range: Range,
+    /// The range of the node the producing query match is rooted at, which contains every
+    /// node the match depends on. A narrowed injection query must see the whole range to
+    /// reproduce or invalidate the match.
+    pattern_range: Range,
 }
 
 #[derive(Debug, Clone)]
@@ -224,6 +229,9 @@ pub struct LayerData {
     flags: LayerUpdateFlags,
     parent: Option<Layer>,
     locals: Locals,
+    /// Set for `injection.combined` layers, so a narrowed injection query can add new matches
+    /// to the existing layer even when its other injections are outside the queried spans.
+    combined_scope: Option<crate::injections_query::InjectionScope>,
 }
 
 /// This PartialEq implementation only checks if that
@@ -342,6 +350,7 @@ mod unit_tests {
             range: start..end,
             layer: Layer(0),
             matched_node_range: start..end,
+            pattern_range: start..end,
         }
     }
 
@@ -354,6 +363,7 @@ mod unit_tests {
             flags: LayerUpdateFlags::default(),
             parent: None,
             locals: Locals::default(),
+            combined_scope: None,
         }
     }
 

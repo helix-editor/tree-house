@@ -1,8 +1,11 @@
 use std::fmt;
-use std::ptr::NonNull;
+use std::ops::Deref;
+use std::os::raw::c_void;
+use std::ptr::{self, NonNull};
+use std::slice;
 
 use crate::node::{Node, NodeRaw};
-use crate::{Point, TreeCursor};
+use crate::{Point, Range, TreeCursor};
 
 // opaque pointers
 pub(super) enum SyntaxTreeData {}
@@ -30,6 +33,51 @@ impl Tree {
 
     pub fn walk(&self) -> TreeCursor<'_> {
         self.root_node().walk()
+    }
+
+    /// Compare `self` to `other` and return the ranges whose syntactic structure changed,
+    /// in `other`'s coordinates.
+    ///
+    /// `self` must be the old tree with all [edits](Tree::edit) applied, i.e. the tree that
+    /// was passed to the parser to produce `other`. Ranges where only the text changed are
+    /// not reported.
+    pub fn changed_ranges(&self, other: &Tree) -> RangeArray {
+        let mut len: u32 = 0;
+        let ptr = unsafe { ts_tree_get_changed_ranges(self.ptr, other.ptr, &mut len) };
+        RangeArray { ptr, len }
+    }
+}
+
+/// An array of [`Range`]s allocated by tree-sitter on the caller's behalf.
+pub struct RangeArray {
+    ptr: *mut Range,
+    len: u32,
+}
+
+impl Deref for RangeArray {
+    type Target = [Range];
+
+    fn deref(&self) -> &[Range] {
+        if self.len == 0 {
+            &[]
+        } else {
+            unsafe { slice::from_raw_parts(self.ptr, self.len as usize) }
+        }
+    }
+}
+
+impl Drop for RangeArray {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            // Free with the allocator that produced the array
+            unsafe { (ptr::addr_of!(ts_current_free).read())(self.ptr.cast()) };
+        }
+    }
+}
+
+impl fmt::Debug for RangeArray {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
     }
 }
 
@@ -95,4 +143,14 @@ extern "C" {
     /// You must describe the edit both in terms of byte offsets and in terms of
     /// row/column coordinates.
     fn ts_tree_edit(self_: NonNull<SyntaxTreeData>, edit: &InputEdit);
+    /// Compare an old edited syntax tree to a new syntax tree representing the same
+    /// document, returning an array of ranges whose syntactic structure has changed.
+    /// The caller must free the returned array.
+    fn ts_tree_get_changed_ranges(
+        old_tree: NonNull<SyntaxTreeData>,
+        new_tree: NonNull<SyntaxTreeData>,
+        length: *mut u32,
+    ) -> *mut Range;
+    /// The deallocator tree-sitter currently uses (see `ts_set_allocator`).
+    static mut ts_current_free: unsafe extern "C" fn(ptr: *mut c_void);
 }

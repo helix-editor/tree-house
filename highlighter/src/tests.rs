@@ -119,8 +119,6 @@ impl TestLanguageLoader {
         self.languages[name]
     }
 
-    // TODO: remove on first use.
-    #[allow(dead_code)]
     fn overwrite_injections(&mut self, lang: &str, content: String) {
         let lang = self.get(lang);
         self.overwrites[lang.idx()].injections = Some(content);
@@ -1021,14 +1019,14 @@ fn edit_sweep() {
         "<!-- two -->\n",
         "```\nplain fence\n```\n",
     ];
-    for doc_idx in 0..25 {
+    for doc_idx in 0..50 {
         let mut text = String::new();
         for _ in 0..3 + rng.next(4) {
             text.push_str(BLOCKS[rng.next(BLOCKS.len())]);
             text.push('\n');
         }
         let mut syntax = Syntax::new(text.as_str().into(), lang, PARSE_TIMEOUT, &loader).unwrap();
-        for round in 0..4 {
+        for round in 0..5 {
             // Generate 1-3 non-overlapping ascending edits in old-text coordinates.
             let mut edits = Vec::new();
             let mut after = text.clone();
@@ -1151,4 +1149,179 @@ fn injection_crossing_range_seams() {
         assert_eq!(rendered_injections.trim_end(), injections.trim_end());
         assert_eq!(rendered_highlights.trim_end(), highlights.trim_end());
     }
+}
+
+#[test]
+fn narrowed_query_fence_language() {
+    let loader = TestLanguageLoader::new();
+    let lang = loader.get("markdown");
+    // The fence's language marker lies outside the injected content node.
+    let t0 = "text\n\n```rust\nlet x = 1;\n```\n";
+    let t1 = "text\n\n```ru\nlet x = 1;\n```\n";
+    let pos = t0.find("rust").unwrap() as u32;
+    let mut syntax = Syntax::new(t0.into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+    syntax
+        .update(
+            t1.into(),
+            PARSE_TIMEOUT,
+            &[edit(pos + 2, pos + 4, pos + 2)],
+            &loader,
+        )
+        .unwrap();
+    assert_matches_fresh(&loader, lang, &syntax, t1);
+
+    // And the inverse: completing the language name must create the injection.
+    let mut syntax = Syntax::new(t1.into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+    syntax
+        .update(
+            t0.into(),
+            PARSE_TIMEOUT,
+            &[edit(pos + 2, pos + 2, pos + 4)],
+            &loader,
+        )
+        .unwrap();
+    assert_matches_fresh(&loader, lang, &syntax, t0);
+}
+
+#[test]
+fn narrowed_query_bare_fence_language() {
+    let loader = TestLanguageLoader::new();
+    let lang = loader.get("markdown");
+    // The new info string completes a match with the unchanged content node.
+    let t0 = "text\n\n```\nlet x = 1;\n```\n";
+    let t1 = "text\n\n```rust\nlet x = 1;\n```\n";
+    let pos = t0.find("```").unwrap() as u32 + 3;
+    let mut syntax = Syntax::new(t0.into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+    syntax
+        .update(
+            t1.into(),
+            PARSE_TIMEOUT,
+            &[edit(pos, pos, pos + 4)],
+            &loader,
+        )
+        .unwrap();
+    assert_matches_fresh(&loader, lang, &syntax, t1);
+}
+
+/// Injects html into `html!(..)`. The macro name is captured separately from the token tree.
+const HTML_MACRO_INJECTION: &str = r#"
+((macro_invocation (identifier) @_macro (token_tree) @injection.content)
+ (#eq? @_macro "html")
+ (#set! injection.language "html")
+ (#set! injection.include-children))"#;
+
+#[test]
+fn narrowed_query_predicate() {
+    let mut loader = TestLanguageLoader::new();
+    loader.overwrite_injections("rust", HTML_MACRO_INJECTION.to_owned());
+    let lang = loader.get("rust");
+    // Renaming `htmx!` to `html!` changes no structure, so only the macro name is in the
+    // re-queried span, not the token tree the match injects into.
+    let t0 = "fn pad() { let a = 1; }\nfn main() {\n    htmx!(<p>hello</p>);\n}\n";
+    let t1 = "fn pad() { let a = 1; }\nfn main() {\n    html!(<p>hello</p>);\n}\n";
+    let pos = t0.find("htmx").unwrap() as u32 + 3;
+    let mut syntax = Syntax::new(t0.into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+    syntax
+        .update(
+            t1.into(),
+            PARSE_TIMEOUT,
+            &[edit(pos, pos + 1, pos + 1)],
+            &loader,
+        )
+        .unwrap();
+    assert_matches_fresh(&loader, lang, &syntax, t1);
+}
+
+#[test]
+fn narrowed_query_shortened_node() {
+    let mut loader = TestLanguageLoader::new();
+    loader.overwrite_injections(
+        "rust",
+        r#"((identifier) @injection.content
+            (#eq? @injection.content "html")
+            (#set! injection.language "comment"))"#
+            .to_owned(),
+    );
+    let lang = loader.get("rust");
+    let t0 = "fn pad() { let a = 1; }\nfn main() { let htmlx = 2; }\n";
+    let t1 = "fn pad() { let a = 1; }\nfn main() { let html = 2; }\n";
+    let t2 = "fn pad() { let a = 1; }\nfn main() { let htm = 2; }\n";
+    let pos = t0.find("htmlx").unwrap() as u32;
+    let mut syntax = Syntax::new(t0.into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+    syntax
+        .update(
+            t1.into(),
+            PARSE_TIMEOUT,
+            &[edit(pos + 4, pos + 5, pos + 4)],
+            &loader,
+        )
+        .unwrap();
+    assert_matches_fresh(&loader, lang, &syntax, t1);
+    syntax
+        .update(
+            t2.into(),
+            PARSE_TIMEOUT,
+            &[edit(pos + 3, pos + 4, pos + 3)],
+            &loader,
+        )
+        .unwrap();
+    assert_matches_fresh(&loader, lang, &syntax, t2);
+}
+
+#[test]
+fn narrowed_query_uncaptured_nodes() {
+    let mut loader = TestLanguageLoader::new();
+    // The match depends on the function body, but only captures the function's name.
+    loader.overwrite_injections(
+        "rust",
+        r#"((function_item
+             name: (identifier) @injection.content
+             body: (block (expression_statement (macro_invocation))))
+            (#set! injection.language "comment"))"#
+            .to_owned(),
+    );
+    let lang = loader.get("rust");
+    let t0 = "fn pad() { let a = 1; }\nfn main() {\n    foo!(x);\n    let b = 2;\n}\n";
+    let t1 = "fn pad() { let a = 1; }\nfn main() {\n    let b = 2;\n}\n";
+    let pos = t0.find("    foo!(x);").unwrap() as u32;
+    let mut syntax = Syntax::new(t0.into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+    syntax
+        .update(
+            t1.into(),
+            PARSE_TIMEOUT,
+            &[edit(pos, pos + 13, pos)],
+            &loader,
+        )
+        .unwrap();
+    assert_matches_fresh(&loader, lang, &syntax, t1);
+    syntax
+        .update(
+            t0.into(),
+            PARSE_TIMEOUT,
+            &[edit(pos, pos, pos + 13)],
+            &loader,
+        )
+        .unwrap();
+    assert_matches_fresh(&loader, lang, &syntax, t0);
+}
+
+#[test]
+fn narrowed_query_combined_pattern() {
+    let loader = TestLanguageLoader::new();
+    let lang = loader.get("markdown");
+    // The second html block becomes the content of an html fence. That match must not
+    // reuse the combined html layer, which still holds the first block outside the
+    // re-queried span.
+    let t0 = "<!-- a -->\n\n<!-- b -->\n\npara\n";
+    let t1 = "<!-- a -->\n\n```html\n<!-- b -->\n```\n\npara\n";
+    let mut syntax = Syntax::new(t0.into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+    syntax
+        .update(
+            t1.into(),
+            PARSE_TIMEOUT,
+            &[edit(12, 12, 20), edit(23, 23, 27)],
+            &loader,
+        )
+        .unwrap();
+    assert_matches_fresh(&loader, lang, &syntax, t1);
 }

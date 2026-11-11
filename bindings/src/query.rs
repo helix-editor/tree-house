@@ -285,6 +285,26 @@ impl Query {
         unsafe { ts_query_start_byte_for_pattern(self.raw, pattern.0) as usize }
     }
 
+    /// For each capture of `pattern`, its depth below the pattern's root.
+    /// - A pattern of several top-level siblings, or a repeated one, is rooted at their parent.
+    /// - A capture used in several alternatives reports its largest depth.
+    #[must_use]
+    pub fn pattern_capture_depths(&self, pattern: Pattern) -> Vec<(Capture, u32)> {
+        assert!(
+            pattern.0 < self.patterns.len() as u32,
+            "Pattern index is {pattern:?} but the pattern count is {}",
+            self.patterns.len(),
+        );
+        let mut depths = vec![u32::MAX; self.num_captures as usize];
+        let _needs_parent =
+            unsafe { ts_query_pattern_capture_depths(self.raw, pattern.0, depths.as_mut_ptr()) };
+        (0..)
+            .map(Capture)
+            .zip(depths)
+            .filter(|&(_, depth)| depth != u32::MAX)
+            .collect()
+    }
+
     /// Get the number of patterns in the query.
     #[must_use]
     pub fn pattern_count(&self) -> usize {
@@ -513,7 +533,16 @@ extern "C" {
     /// source code strings.
     fn ts_query_start_byte_for_pattern(query: NonNull<QueryData>, pattern_index: u32) -> u32;
 
-    // fn ts_query_is_pattern_rooted(query: NonNull<QueryData>, pattern_index: u32) -> bool;
+    /// Defined in `ext/query_ext.c`; see [`Query::pattern_capture_depths`]. Returns whether the
+    /// pattern is rooted at the parent of its top-level steps.
+    fn ts_query_pattern_capture_depths(
+        query: NonNull<QueryData>,
+        pattern_index: u32,
+        depths: *mut u32,
+    ) -> bool;
+
+    #[cfg(test)]
+    fn ts_query_is_pattern_rooted(query: NonNull<QueryData>, pattern_index: u32) -> bool;
     // fn ts_query_is_pattern_non_local(query: NonNull<QueryData>, pattern_index: u32) -> bool;
     // fn ts_query_is_pattern_guaranteed_at_step(query: NonNull<QueryData>, byte_offset: u32) -> bool;
     /// Get the name and length of one of the query's captures, or one of the
@@ -542,4 +571,126 @@ extern "C" {
     /// This prevents the pattern from matching and removes most of the overhead
     /// associated with the pattern. Currently, there is no way to undo this.
     fn ts_query_disable_pattern(self_: NonNull<QueryData>, pattern_index: u32);
+}
+
+#[cfg(test)]
+impl Query {
+    /// Whether `pattern_capture_depths` roots `pattern` at the parent of its top-level steps.
+    fn pattern_needs_parent(&self, pattern: Pattern) -> bool {
+        let mut depths = vec![u32::MAX; self.num_captures as usize];
+        unsafe { ts_query_pattern_capture_depths(self.raw, pattern.0, depths.as_mut_ptr()) }
+    }
+
+    /// Whether tree-sitter considers `pattern` rooted, to cross-check `pattern_needs_parent`.
+    fn is_pattern_rooted(&self, pattern: Pattern) -> bool {
+        unsafe { ts_query_is_pattern_rooted(self.raw, pattern.0) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use crate::{Grammar, Query};
+
+    /// Each pattern's capture depths, as `capture:depth`.
+    fn depths(source: &str) -> Vec<Vec<String>> {
+        let so = Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-grammars/rust/rust.so");
+        let grammar = unsafe { Grammar::new("rust", &so) }.expect("rust grammar");
+        let query = Query::new(grammar, source, |_, _| Ok(())).unwrap();
+        query
+            .patterns()
+            .map(|pattern| {
+                query
+                    .pattern_capture_depths(pattern)
+                    .into_iter()
+                    .map(|(capture, depth)| format!("{}:{depth}", query.capture_name(capture)))
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn capture_depths_follow_node_nesting() {
+        let source = r#"
+            ((macro_invocation
+               macro: [
+                 (scoped_identifier name: (_) @name)
+                 (identifier) @name
+               ]
+               (token_tree) @content)
+             (#eq? @name "html"))
+
+            (function_item
+              name: (identifier) @content
+              body: (block . (expression_statement (macro_invocation (identifier) @inner))))
+
+            [(line_comment) (block_comment)] @content
+            (_ (identifier) @content)
+        "#;
+        assert_eq!(
+            depths(source),
+            [
+                vec!["name:2", "content:1"],
+                vec!["content:1", "inner:4"],
+                vec!["content:0"],
+                vec!["content:1"],
+            ]
+        );
+    }
+
+    #[test]
+    fn sibling_sequences_are_rooted_at_the_parent() {
+        let source = r#"
+            ((line_comment) @comment . (function_item name: (identifier) @name))
+            ((line_comment)+ @comments)
+            ("fn" @keyword)
+        "#;
+        assert_eq!(
+            depths(source),
+            [
+                vec!["comment:1", "name:2"],
+                vec!["comments:1"],
+                vec!["keyword:0"],
+            ]
+        );
+    }
+
+    #[test]
+    fn pattern_rootedness_matches_tree_sitter() {
+        let grammars = Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-grammars");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&grammars).unwrap() {
+            let dir = entry.unwrap().path();
+            let Some(lang) = dir.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let so = dir.join(format!("{lang}.so"));
+            if !so.exists() {
+                continue;
+            }
+            let grammar = unsafe { Grammar::new(lang, &so) }.expect("grammar");
+            for kind in ["injections", "locals", "highlights"] {
+                let Ok(source) = std::fs::read_to_string(dir.join(format!("{kind}.scm"))) else {
+                    continue;
+                };
+                let query = Query::new(grammar, &source, |_, _| Ok(())).unwrap();
+                for pattern in query.patterns() {
+                    let text = &source[query.start_byte_for_pattern(pattern)..];
+                    if text.starts_with("(_") && text[2..].starts_with(char::is_whitespace) {
+                        continue;
+                    }
+                    assert_eq!(
+                        query.pattern_needs_parent(pattern),
+                        !query.is_pattern_rooted(pattern),
+                        "{lang}/{kind}.scm pattern {}: {}",
+                        pattern.0,
+                        text.lines().next().unwrap_or_default()
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 100, "only {checked} patterns checked");
+    }
 }
