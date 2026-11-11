@@ -693,6 +693,14 @@ impl Syntax {
             return;
         }
         let layer_data = self.layer_mut(layer);
+        // Unlike the ranges, the extents overlap across entries, so they cannot share the
+        // sequential pass below. They only steer reuse and narrowing, so map each one conservatively.
+        for injection in &mut layer_data.injections {
+            injection.matched_node_range = map_pos_down(injection.matched_node_range.start, edits)
+                ..map_pos_up(injection.matched_node_range.end, edits);
+            injection.pattern_range = map_pos_down(injection.pattern_range.start, edits)
+                ..map_pos_up(injection.pattern_range.end, edits);
+        }
         let first_relevant_injection = layer_data
             .injections
             .partition_point(|injection| injection.range.end < edits[0].start_byte);
@@ -708,31 +716,14 @@ impl Syntax {
         } else {
             0
         };
-        // injections and edits are non-overlapping and sorted so we can
-        // apply edits in O(M+N) instead of O(NM)
-        let all_edits = edits;
+        // injection ranges and edits are non-overlapping and sorted so we can
+        // map the ranges in O(M+N) instead of O(NM)
         let mut edits = edits.iter().peekable();
         let mut injections = take(&mut layer_data.injections);
         for injection in &mut injections[first_relevant_injection..] {
             let flags = &mut self.layer_mut(injection.layer).flags;
             let injection_range = &mut injection.range;
-            let matched_node_range = &mut injection.matched_node_range;
 
-            debug_assert!(matched_node_range.start <= injection_range.start);
-            debug_assert!(matched_node_range.end >= injection_range.end);
-
-            while let Some(edit) =
-                edits.next_if(|edit| edit.old_end_byte < matched_node_range.start)
-            {
-                offset += edit.offset();
-            }
-            let mut mapped_node_range_start = (matched_node_range.start as i32 + offset) as u32;
-            if let Some(edit) = edits
-                .peek()
-                .filter(|edit| edit.start_byte <= matched_node_range.start)
-            {
-                mapped_node_range_start = (edit.new_end_byte as i32 + offset) as u32;
-            }
             while let Some(edit) = edits.next_if(|edit| edit.old_end_byte < injection_range.start) {
                 offset += edit.offset();
             }
@@ -765,35 +756,15 @@ impl Syntax {
                     mapped_end = mapped_start;
                 }
             }
-            let mut mapped_node_range_end = (matched_node_range.end as i32 + offset) as u32;
-            if let Some(edit) = edits
-                .peek()
-                .filter(|edit| edit.start_byte <= matched_node_range.end)
-            {
-                if edit.start_byte < matched_node_range.start {
-                    mapped_node_range_start = (edit.new_end_byte as i32 + offset) as u32;
-                    mapped_node_range_end = mapped_node_range_start;
-                }
-            }
             *injection_range = mapped_start..mapped_end;
-            *matched_node_range = mapped_node_range_start..mapped_node_range_end;
-            // Pattern extents overlap across entries (a nested match's extent contains its
-            // inner entries), so they cannot share the sequential pass; map them on their own,
-            // conservatively, as they only need to contain the true extent.
-            injection.pattern_range = map_pos_down(injection.pattern_range.start, all_edits)
-                ..map_pos_up(injection.pattern_range.end, all_edits);
-            // Around a straddling edit the mappings can disagree; the extent must keep
-            // containing the entry, which the narrowed query splits by `range`.
-            injection.pattern_range.start = injection
-                .pattern_range
-                .start
-                .min(injection.range.start)
-                .min(injection.matched_node_range.start);
-            injection.pattern_range.end = injection
-                .pattern_range
-                .end
-                .max(injection.range.end)
-                .max(injection.matched_node_range.end);
+            // Around an edit straddling a range boundary the conservatively mapped extents
+            // can come out narrower than the exactly mapped range, widening them is safe.
+            let matched_node_range = &mut injection.matched_node_range;
+            matched_node_range.start = matched_node_range.start.min(injection.range.start);
+            matched_node_range.end = matched_node_range.end.max(injection.range.end);
+            injection.pattern_range.start =
+                injection.pattern_range.start.min(matched_node_range.start);
+            injection.pattern_range.end = injection.pattern_range.end.max(matched_node_range.end);
         }
         self.layer_mut(layer).injections = injections;
     }
