@@ -324,6 +324,11 @@ where
     }
 
     #[inline]
+    pub fn range(&self) -> Range {
+        self.layer_manager.range.clone()
+    }
+
+    #[inline]
     pub fn syntax(&self) -> &'tree Syntax {
         self.layer_manager.syntax
     }
@@ -484,6 +489,12 @@ where
     #[inline]
     pub fn source(&self) -> RopeSlice<'a> {
         self.0.source()
+    }
+
+    /// The byte range the iterator was created for.
+    #[inline]
+    pub fn range(&self) -> Range {
+        self.0.range()
     }
 
     #[inline]

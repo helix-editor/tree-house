@@ -284,6 +284,19 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
         self.next_highlight_start.min(self.next_highlight_end)
     }
 
+    /// Restarts highlighting at `offset`, keeping the end of the original range.
+    ///
+    /// Highlights covering `offset` are reported again, so the events after a seek can start
+    /// before `offset`. This is much cheaper than calling [`Highlighter::advance`] across a
+    /// large part of the document.
+    pub fn seek(&mut self, offset: u32) {
+        let end = self.query.range().end;
+        let syntax = self.query.syntax();
+        let source = self.query.source();
+        let loader = self.query.loader().0;
+        *self = Highlighter::new(syntax, source, loader, offset.min(end)..end);
+    }
+
     pub fn advance(&mut self) -> (HighlightEvent, HighlightList<'_>) {
         let mut refresh = false;
 

@@ -2343,3 +2343,42 @@ fn parse_after_cancel() {
         .unwrap();
     assert_matches_fresh(&loader, lang, &syntax, &text);
 }
+
+#[test]
+fn highlighter_seek() {
+    let loader = TestLanguageLoader::new();
+    let syntax = Syntax::new(
+        LAYERED_DOC.into(),
+        loader.get("markdown"),
+        PARSE_TIMEOUT,
+        &loader,
+    )
+    .unwrap();
+    fn highlights_from<'a, 'tree: 'a>(
+        highlighter: &mut Highlighter<'a, 'tree, TestLanguageLoader>,
+        start: u32,
+        end: u32,
+    ) -> Vec<Vec<Highlight>> {
+        (start..end)
+            .map(|pos| {
+                while highlighter.next_event_offset() <= pos {
+                    highlighter.advance();
+                }
+                highlighter.active_highlights().collect()
+            })
+            .collect()
+    }
+    let end = LAYERED_DOC.len() as u32;
+    let mut highlighter = Highlighter::new(&syntax, LAYERED_DOC.into(), &loader, 0..end);
+    let expected = highlights_from(&mut highlighter, 0, end);
+    for anchor in ["Title", "alpha + 1", "beta: u32", "<!-- b"] {
+        let pos = LAYERED_DOC.find(anchor).unwrap() as u32 + 2;
+        let mut highlighter = Highlighter::new(&syntax, LAYERED_DOC.into(), &loader, 0..end);
+        highlighter.seek(pos);
+        assert_eq!(
+            highlights_from(&mut highlighter, pos, end),
+            expected[pos as usize..],
+            "highlights after seeking to {pos} ({anchor:?})"
+        );
+    }
+}
