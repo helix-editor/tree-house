@@ -889,13 +889,12 @@ fn intersect_ranges<'tree, 'p>(
     let parent_ranges = parent_ranges[i..]
         .iter()
         .map(|range| range.start_byte..range.end_byte);
-    let excluded_ranges = node
-        .children()
-        .filter(move |node| match include_children {
-            IncludedChildren::None => true,
-            IncludedChildren::All => false,
-            IncludedChildren::Unnamed => node.is_named(),
-        })
+    // With `include-children` nothing is excluded, so skip walking the children.
+    let excluded_ranges = (include_children != IncludedChildren::All)
+        .then(|| node.children())
+        .into_iter()
+        .flatten()
+        .filter(move |node| include_children == IncludedChildren::None || node.is_named())
         .map(|n| n.byte_range());
 
     intersect_ranges_impl(range, excluded_ranges, parent_ranges)
