@@ -139,7 +139,7 @@ impl Locals {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "fixtures"))]
 impl Locals {
     pub(crate) fn dump(&self) -> Vec<String> {
         let captures = self.captures.iter().flatten().map(|capture| {
