@@ -2011,15 +2011,30 @@ fn multi_edit_sweep() {
         "\n", "///", "```", "<!--", "-->", "`", "*", "{", "}", "html",
     ];
 
+    sweep_multi_edits(
+        Lcg(0x5EED),
+        30,
+        &[
+            ("markdown", MARKDOWN_PIECES, MARKDOWN_INSERTS),
+            ("rust", RUST_PIECES, RUST_INSERTS),
+        ],
+        MARKERS,
+    );
+}
+
+/// Builds `docs` documents per corpus (language, pieces, inserted strings) and applies chains
+/// of 1-3 edit transactions, mostly at `markers`, comparing each update with a fresh parse.
+fn sweep_multi_edits(
+    mut rng: Lcg,
+    docs: usize,
+    corpora: &[(&str, &[&str], &[&str])],
+    markers: &[&str],
+) {
     let loader = TestLanguageLoader::new();
-    let mut rng = Lcg(0x5EED);
     let mut diverged = 0;
-    for (lang, pieces, inserts) in [
-        ("markdown", MARKDOWN_PIECES, MARKDOWN_INSERTS),
-        ("rust", RUST_PIECES, RUST_INSERTS),
-    ] {
+    for &(lang, pieces, inserts) in corpora {
         let lang = loader.get(lang);
-        for _ in 0..30 {
+        for _ in 0..docs {
             let mut text = String::new();
             for _ in 0..2 + rng.next(8) {
                 text.push_str(pieces[rng.next(pieces.len())]);
@@ -2036,7 +2051,7 @@ fn multi_edit_sweep() {
                     if lo >= text.len() {
                         break;
                     }
-                    let marks: Vec<usize> = MARKERS
+                    let marks: Vec<usize> = markers
                         .iter()
                         .flat_map(|m| text.match_indices(m).flat_map(|(i, m)| [i, i + m.len()]))
                         .filter(|&i| i >= lo && i <= text.len())
@@ -2077,6 +2092,83 @@ fn multi_edit_sweep() {
         }
     }
     eprintln!("steps where tree-sitter diverged from a fresh parse: {diverged}");
+}
+
+/// The multi-edit sweep over erlang, html and python, which have nested combined injections
+/// and raw-text elements.
+#[test]
+fn multi_edit_sweep_other_grammars() {
+    const ERLANG_PIECES: &[&str] = &[
+        "-module(m).\n",
+        "%% @doc Returns <b>bold</b> text.\n",
+        "%% ```\n%% foo() -> ok.\n%% '''\n",
+        "%% @type t() = {a, b}.\n",
+        "% plain TODO: x\n",
+        "-doc \"some *markdown* and `code`\".\n",
+        "f(X) -> X + 1.\n",
+        "g(A, B) ->\n    C = A,\n    C + B.\n",
+        "%% <p>para <i>x</i></p>\n",
+        "\n",
+    ];
+    const ERLANG_INSERTS: &[&str] = &[
+        "%% ", "x", "\n", "<b>", "</b>", "@doc ", "```", "'''", "\"", "-doc ", "% ", ".", "@type ",
+    ];
+    const HTML_PIECES: &[&str] = &[
+        "<p>text</p>\n",
+        "<style>\na { color: red; }\n</style>\n",
+        "<script>var x = 1;</script>\n",
+        "<!-- comment TODO: x -->\n",
+        "<div><style>b{}</style></div>\n",
+        "plain\n",
+    ];
+    const HTML_INSERTS: &[&str] = &[
+        "<style>", "</style>", "<", ">", "x", "\n", "<!--", "-->", "a{}", "/",
+    ];
+    const PYTHON_PIECES: &[&str] = &[
+        "def f(x, y):\n    z = x + y\n    return z\n\n",
+        "class C:\n    def m(self, a):\n        return a\n\n",
+        "# comment NOTE: x\n",
+        "lam = lambda q: q * 2\n",
+        "for i in range(3):\n    print(i)\n",
+        "x = [j for j in y]\n",
+    ];
+    const PYTHON_INSERTS: &[&str] = &[
+        "x",
+        "\n",
+        "    ",
+        "def g(w):\n",
+        ":",
+        "(",
+        ")",
+        "#",
+        "lambda v: ",
+        ", k",
+    ];
+    const MARKDOWN_PIECES: &[&str] = &[
+        "text\n\n",
+        "```erlang\n%% @doc <b>x</b>\nf() -> ok.\n```\n\n",
+        "<div>\n<style>a{}</style>\n</div>\n\n",
+        "```python\ndef f(x):\n    return x\n```\n\n",
+        "```html\n<style>b{}</style><!-- c -->\n```\n\n",
+    ];
+    const MARKDOWN_INSERTS: &[&str] = &[
+        "x", "\n", "```", "<", ">", "%% ", "<style>", "</style>", "#",
+    ];
+    const MARKERS: &[&str] = &[
+        "\n", "%%", "<", ">", "\"", "```", "'''", "@", "(", ")", ":", "style", "{", "}", "#",
+        "    ",
+    ];
+    sweep_multi_edits(
+        Lcg(0xE71A),
+        30,
+        &[
+            ("erlang", ERLANG_PIECES, ERLANG_INSERTS),
+            ("html", HTML_PIECES, HTML_INSERTS),
+            ("python", PYTHON_PIECES, PYTHON_INSERTS),
+            ("markdown", MARKDOWN_PIECES, MARKDOWN_INSERTS),
+        ],
+        MARKERS,
+    );
 }
 
 #[test]
