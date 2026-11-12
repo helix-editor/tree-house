@@ -2121,3 +2121,20 @@ fn retained_locals_follow_config() {
         }
     }
 }
+
+/// The html layer's ranges `</b>` and `</style>` are adjacent, and css is injected into the
+/// first. Entering the second must not enter the css again.
+#[test]
+fn child_injection_at_range_seam() {
+    use crate::query_iter::QueryIter;
+    let loader = TestLanguageLoader::new();
+    let text = "%% @doc <b<style>>x</b></style>\n";
+    let lang = loader.get("erlang");
+    let syntax = Syntax::new(text.into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+    let config = loader.get_config(lang).unwrap();
+    let query = tree_sitter::Query::new(config.grammar, "", |_, _| unreachable!()).unwrap();
+    let rope = ropey::Rope::from_str(text);
+    let events = QueryIter::<_, ()>::new(&syntax, rope.slice(..), |_| Some(&query), 0u32..);
+    let offsets: Vec<u32> = events.map(|event| event.start_byte()).collect();
+    assert!(offsets.is_sorted(), "events went backwards: {offsets:?}");
+}

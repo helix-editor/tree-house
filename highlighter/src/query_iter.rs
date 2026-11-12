@@ -234,7 +234,7 @@ where
                 let start_point = injection.range.start.max(self.range.start);
                 let injection_start = layer
                     .injections
-                    .partition_point(|child| child.range.end < start_point);
+                    .partition_point(|child| child.range.end <= start_point);
                 let cursor = if self.finished_layers.contains(&injection.layer) {
                     None
                 } else {
