@@ -300,6 +300,7 @@ where
             range: node.byte_range(),
             layer: syntax.root,
             pattern_range: node.byte_range(),
+            pattern: Pattern::SENTINEL,
         };
         let mut layer_manager = Box::new(QueryIterLayerManager {
             range,

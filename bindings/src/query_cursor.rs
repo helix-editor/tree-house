@@ -144,7 +144,14 @@ impl InactiveQueryCursor {
         };
         this.set_byte_range(range);
         this.set_match_limit(limit);
+        this.set_max_start_depth(u32::MAX);
         this
+    }
+
+    /// Only start matches at most `depth` levels below the node the query is executed on.
+    #[doc(alias = "ts_query_cursor_set_max_start_depth")]
+    pub fn set_max_start_depth(&mut self, depth: u32) {
+        unsafe { ts_query_cursor_set_max_start_depth(self.ptr.as_ptr(), depth) }
     }
 
     /// Return the maximum number of in-progress matches for this cursor.
@@ -341,6 +348,7 @@ extern "C" {
     fn ts_query_cursor_did_exceed_match_limit(self_: *const QueryCursorData) -> bool;
     fn ts_query_cursor_match_limit(self_: *const QueryCursorData) -> u32;
     fn ts_query_cursor_set_match_limit(self_: *mut QueryCursorData, limit: u32);
+    fn ts_query_cursor_set_max_start_depth(self_: *mut QueryCursorData, max_start_depth: u32);
     /// Set the range of bytes or (row, column) positions in which the query
     /// will be executed.
     fn ts_query_cursor_set_byte_range(self_: *mut QueryCursorData, start_byte: u32, end_byte: u32);

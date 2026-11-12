@@ -10,7 +10,9 @@ use ropey::RopeSlice;
 use tree_sitter::{Capture, InactiveQueryCursor, Node, Pattern, Query};
 
 use crate::highlighter::Highlight;
-use crate::injections_query::{absorb, grow_spans, intersects_any, match_extent, EditMap};
+use crate::injections_query::{
+    absorb, anchor_root, grow_spans, intersects_any, match_extent, EditMap,
+};
 use crate::{LanguageConfig, LanguageLoader, Layer, Range, Syntax, TREE_SITTER_MATCH_LIMIT};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
@@ -284,16 +286,33 @@ impl Syntax {
                     capture.range = map.down(capture.range.start)..map.up(capture.range.end);
                     capture.extent = map.down(capture.extent.start)..map.up(capture.extent.end);
                 }
+                let mut anchors = Vec::new();
                 let new = loop {
                     let old_extents = old.iter().map(|capture| &capture.extent);
-                    grow_spans(query, depths, &root, source, old_extents, &mut spans);
+                    grow_spans(
+                        query,
+                        depths,
+                        &root,
+                        source,
+                        old_extents,
+                        &mut spans,
+                        &mut anchors,
+                    );
                     let mut new = Vec::new();
                     for span in &spans {
-                        query_captures(query, depths, &root, source, span.clone(), &mut new);
+                        let span = span.clone();
+                        query_captures(query, depths, &root, source, span, &anchors, &mut new);
                     }
-                    let escaped = new.iter().fold(false, |grew, capture| {
+                    let mut escaped = new.iter().fold(false, |grew, capture| {
                         grew | absorb(&mut spans, &capture.extent)
                     });
+                    for anchor in &anchors {
+                        let spread = injection_query.local_depth_spread;
+                        if !anchor_holds(query, depths, spread, &root, source, anchor, &old, &new) {
+                            absorb(&mut spans, anchor);
+                            escaped = true;
+                        }
+                    }
                     if !escaped {
                         break new;
                     }
@@ -301,14 +320,24 @@ impl Syntax {
                 // Captures of the same node are either all kept or all re-queried, so the stable
                 // sort by start keeps them in cursor order.
                 let mut captures = old;
-                captures.retain(|capture| !intersects_any(&spans, &capture.range));
+                captures.retain(|capture| {
+                    !intersects_any(&spans, &capture.range) || anchors.contains(&capture.extent)
+                });
                 captures.extend(new);
                 captures.sort_by_key(|capture| capture.range.start);
                 captures
             }
             _ => {
                 let mut captures = Vec::new();
-                query_captures(query, depths, &root, source, 0..u32::MAX, &mut captures);
+                query_captures(
+                    query,
+                    depths,
+                    &root,
+                    source,
+                    0..u32::MAX,
+                    &[],
+                    &mut captures,
+                );
                 captures
             }
         };
@@ -360,6 +389,8 @@ fn query_captures(
     root: &Node,
     source: RopeSlice,
     span: Range,
+    // Anchored extents (see `grow_spans`), whose captures are kept from the previous run.
+    anchors: &[Range],
     out: &mut Vec<LocalCapture>,
 ) {
     // A cursor skips zero-width captures at the very start of its range so widen the range by a byte.
@@ -372,13 +403,68 @@ fn query_captures(
         if !intersects_any(std::slice::from_ref(&span), &matched_node.node.byte_range()) {
             continue;
         }
+        let extent = match_extent(depths, &query_match);
+        if anchors.contains(&extent) {
+            continue;
+        }
         out.push(LocalCapture {
             range: matched_node.node.byte_range(),
-            extent: match_extent(depths, &query_match),
+            extent,
             capture: matched_node.capture,
             pattern: query_match.pattern(),
         });
     }
+}
+
+/// Whether the old captures of the matches rooted at `extent` can be kept. The re-run must
+/// reproduce them exactly. Kept and re-queried captures are merged by start position, so no
+/// two may start at the same position.
+#[allow(clippy::too_many_arguments)]
+fn anchor_holds(
+    query: &Query,
+    depths: &[Vec<(Capture, u32)>],
+    spread: u32,
+    node: &Node,
+    source: RopeSlice,
+    extent: &Range,
+    old: &[LocalCapture],
+    requeried: &[LocalCapture],
+) -> bool {
+    let Some((root, depth)) = anchor_root(node, extent, spread) else {
+        return false;
+    };
+    let key = |range: &Range, capture: Capture, pattern: Pattern| {
+        (range.start, range.end, capture.idx(), pattern)
+    };
+    let mut kept: Vec<_> = old
+        .iter()
+        .filter(|capture| capture.extent == *extent)
+        .map(|capture| key(&capture.range, capture.capture, capture.pattern))
+        .collect();
+    if requeried
+        .iter()
+        .any(|capture| kept.iter().any(|kept| kept.0 == capture.range.start))
+    {
+        return false;
+    }
+    let mut cursor = InactiveQueryCursor::new(0..u32::MAX, TREE_SITTER_MATCH_LIMIT);
+    cursor.set_max_start_depth(depth);
+    let mut cursor = cursor.execute_query(query, &root, source);
+    let mut rerun = Vec::new();
+    while let Some(query_match) = cursor.next_match() {
+        if match_extent(depths, &query_match) == *extent {
+            rerun.extend(query_match.matched_nodes().map(|matched| {
+                key(
+                    &matched.node.byte_range(),
+                    matched.capture,
+                    query_match.pattern(),
+                )
+            }));
+        }
+    }
+    kept.sort_unstable();
+    rerun.sort_unstable();
+    kept == rerun
 }
 
 #[cfg(test)]

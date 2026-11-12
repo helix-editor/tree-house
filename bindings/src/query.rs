@@ -305,6 +305,19 @@ impl Query {
             .collect()
     }
 
+    /// The largest difference between the depths of one capture in the pattern's
+    /// alternatives. A match can be rooted up to this many levels below where its capture
+    /// depths place it.
+    #[must_use]
+    pub fn pattern_depth_spread(&self, pattern: Pattern) -> u32 {
+        assert!(
+            pattern.0 < self.patterns.len() as u32,
+            "Pattern index is {pattern:?} but the pattern count is {}",
+            self.patterns.len(),
+        );
+        unsafe { ts_query_pattern_depth_spread(self.raw, pattern.0) }
+    }
+
     /// Get the number of patterns in the query.
     #[must_use]
     pub fn pattern_count(&self) -> usize {
@@ -540,6 +553,9 @@ extern "C" {
         pattern_index: u32,
         depths: *mut u32,
     ) -> bool;
+
+    /// Defined in `ext/query_ext.c`; see [`Query::pattern_depth_spread`].
+    fn ts_query_pattern_depth_spread(query: NonNull<QueryData>, pattern_index: u32) -> u32;
 
     #[cfg(test)]
     fn ts_query_is_pattern_rooted(query: NonNull<QueryData>, pattern_index: u32) -> bool;

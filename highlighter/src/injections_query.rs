@@ -94,9 +94,12 @@ pub struct InjectionsQuery {
     injection_shebang_capture: Option<Capture>,
     /// Per pattern, see [`Query::pattern_capture_depths`].
     capture_depths: Box<[Vec<(Capture, u32)>]>,
+    /// The largest [`Query::pattern_depth_spread`] of any pattern.
+    depth_spread: u32,
     pub(crate) local_query: Query,
     /// Per locals pattern, see [`Query::pattern_capture_depths`].
     pub(crate) local_capture_depths: Box<[Vec<(Capture, u32)>]>,
+    pub(crate) local_depth_spread: u32,
     // TODO: Use a Vec<bool> instead?
     pub(crate) not_scope_inherits: HashSet<Pattern>,
     pub(crate) local_scope_capture: Option<Capture>,
@@ -177,6 +180,7 @@ impl InjectionsQuery {
                 .patterns()
                 .map(|pattern| injection_query.pattern_capture_depths(pattern))
                 .collect(),
+            depth_spread: depth_spread(&injection_query),
             injection_query,
             not_scope_inherits,
             local_scope_capture: local_query.get_capture("local.scope"),
@@ -185,6 +189,7 @@ impl InjectionsQuery {
                 .patterns()
                 .map(|pattern| local_query.pattern_capture_depths(pattern))
                 .collect(),
+            local_depth_spread: depth_spread(&local_query),
             local_query,
         })
     }
@@ -295,18 +300,18 @@ impl InjectionsQuery {
     /// ```
     /// is possible and will always result in iteration order [range1, range2].
     /// This case should be handled by the calling function
-    fn execute<'a, L: LanguageLoader>(
+    fn execute<'a, L: LanguageLoader, F: Fn(&Range) -> bool + 'a>(
         &'a self,
         node: &Node<'a>,
         source: RopeSlice<'a>,
         loader: &'a L,
         range: Range,
-    ) -> impl Iterator<Item = InjectionQueryMatch<'a>> + use<'a, L> {
-        let mut cursor = InactiveQueryCursor::new(range, TREE_SITTER_MATCH_LIMIT).execute_query(
-            &self.injection_query,
-            node,
-            source,
-        );
+        max_start_depth: u32,
+        keep_extent: F,
+    ) -> impl Iterator<Item = InjectionQueryMatch<'a>> + use<'a, L, F> {
+        let mut cursor = InactiveQueryCursor::new(range, TREE_SITTER_MATCH_LIMIT);
+        cursor.set_max_start_depth(max_start_depth);
+        let mut cursor = cursor.execute_query(&self.injection_query, node, source);
         let injection_content_capture = self.injection_content_capture.unwrap();
         let iter = iter::from_fn(move || loop {
             let (query_match, node_idx) = cursor.next_matched_node()?;
@@ -321,7 +326,7 @@ impl InjectionsQuery {
             if mat.last_match {
                 query_match.remove();
             }
-            if range.is_empty() {
+            if range.is_empty() || !keep_extent(&mat.extent) {
                 continue;
             }
             break Some(mat);
@@ -371,15 +376,20 @@ impl InjectionsQuery {
     }
 
     /// Runs the query over `spans`, after growing them with [`grow_spans`]. Returns the grown
-    /// spans and the matches.
+    /// spans, the anchors whose old injections are kept, and the matches. `language` returns the
+    /// language of an old injection's layer, or `None` for a combined layer.
+    #[allow(clippy::too_many_arguments)]
     fn execute_narrowed<'a, L: LanguageLoader>(
         &'a self,
         node: &Node<'a>,
         source: RopeSlice<'a>,
         loader: &'a L,
         old: &[Injection],
+        language: impl Fn(Layer) -> Option<Language>,
+        parent_ranges: &[tree_sitter::Range],
         mut spans: Vec<Range>,
-    ) -> (Vec<Range>, Vec<InjectionQueryMatch<'a>>) {
+    ) -> (Vec<Range>, Vec<Range>, Vec<InjectionQueryMatch<'a>>) {
+        let mut anchors = Vec::new();
         loop {
             let old_extents = old.iter().map(|injection| &injection.pattern_range);
             grow_spans(
@@ -389,22 +399,133 @@ impl InjectionsQuery {
                 source,
                 old_extents,
                 &mut spans,
+                &mut anchors,
             );
             // Each match lies inside a single span, so concatenating the results keeps them in order.
             let matches: Vec<_> = spans
                 .iter()
-                .flat_map(|span| self.execute(node, source, loader, span.clone()))
+                .flat_map(|span| {
+                    let anchors = anchors.clone();
+                    self.execute(
+                        node,
+                        source,
+                        loader,
+                        span.clone(),
+                        u32::MAX,
+                        move |extent| !anchors.contains(extent),
+                    )
+                })
                 .collect();
             // `execute` sees the same matches as the pre-pass, so this cannot grow the spans
             // unless the two cursors hit the match limit differently.
-            let escaped = matches
+            let mut escaped = matches
                 .iter()
                 .fold(false, |grew, mat| grew | absorb(&mut spans, &mat.extent));
+            for anchor in &anchors {
+                if !self.anchor_holds(
+                    node,
+                    source,
+                    loader,
+                    anchor,
+                    old,
+                    &language,
+                    parent_ranges,
+                    &matches,
+                ) {
+                    absorb(&mut spans, anchor);
+                    escaped = true;
+                }
+            }
             if !escaped {
-                return (spans, matches);
+                return (spans, anchors, matches);
             }
         }
     }
+
+    /// Whether the old injections of the matches rooted at `extent` can be kept. The re-run
+    /// must reproduce them exactly, and no `requeried` match may overlap them.
+    ///
+    /// Matches that share a layer (`injection.combined`, several content nodes) are never kept,
+    /// so their layer is only assigned in one place.
+    #[allow(clippy::too_many_arguments)]
+    fn anchor_holds(
+        &self,
+        node: &Node,
+        source: RopeSlice,
+        loader: &impl LanguageLoader,
+        extent: &Range,
+        old: &[Injection],
+        language: impl Fn(Layer) -> Option<Language>,
+        parent_ranges: &[tree_sitter::Range],
+        requeried: &[InjectionQueryMatch],
+    ) -> bool {
+        let Some((root, depth)) = anchor_root(node, extent, self.depth_spread) else {
+            return false;
+        };
+        let target = extent.clone();
+        let rerun: Vec<_> = self
+            .execute(&root, source, loader, 0..u32::MAX, depth, move |e| {
+                *e == target
+            })
+            .collect();
+        let overlaps = |mat: &InjectionQueryMatch| {
+            requeried
+                .iter()
+                .any(|other| ranges_intersect(&other.node.byte_range(), &mat.node.byte_range()))
+        };
+        if rerun.iter().any(|mat| mat.scope.is_some() || overlaps(mat)) {
+            return false;
+        }
+        let rerun = rerun.iter().flat_map(|mat| {
+            intersect_ranges(mat.include_children, mat.node.clone(), parent_ranges)
+                .map(|range| (range, Some(mat.language), mat.pattern))
+        });
+        let kept = old
+            .iter()
+            .filter(|injection| injection.pattern_range == *extent)
+            .map(|injection| {
+                (
+                    injection.range.clone(),
+                    language(injection.layer),
+                    injection.pattern,
+                )
+            });
+        rerun.eq(kept)
+    }
+}
+
+/// Extents at least this long are not re-queried in full when a span only partly covers them.
+/// Only the matches rooted at their node are re-run (see [`grow_spans`]).
+const ANCHOR_MIN: u32 = 1024;
+
+fn depth_spread(query: &Query) -> u32 {
+    query
+        .patterns()
+        .map(|pattern| query.pattern_depth_spread(pattern))
+        .max()
+        .unwrap_or(0)
+}
+
+/// The topmost node whose range is `extent`, and the max start depth for re-running the
+/// matches rooted there. The depth includes `spread`, the query's depth spread.
+pub(crate) fn anchor_root<'t>(
+    node: &Node<'t>,
+    extent: &Range,
+    spread: u32,
+) -> Option<(Node<'t>, u32)> {
+    let mut root = node.descendant_for_byte_range(extent.start, extent.end)?;
+    if root.byte_range() != *extent {
+        return None;
+    }
+    let mut depth = 1;
+    while let Some(parent) = root
+        .parent()
+        .filter(|parent| parent.byte_range() == *extent)
+    {
+        root = parent;
+        depth += 1;
+    }
+    Some((root, depth + spread))
 }
 
 /// The byte range of the node `query_match` is rooted at. `depths` holds each pattern's capture depths.
@@ -433,6 +554,9 @@ pub(crate) fn match_extent(depths: &[Vec<(Capture, u32)>], query_match: &QueryMa
 
 /// Grows `spans` until each one contains every new match and old result it touches. `old`
 /// holds the old results' extents, mapped through the edits.
+///
+/// A long extent that a span only partly covers goes into `anchors` instead. The caller re-runs
+/// just its matches and grows the spans over it if they changed.
 pub(crate) fn grow_spans<'a>(
     query: &Query,
     depths: &[Vec<(Capture, u32)>],
@@ -440,11 +564,24 @@ pub(crate) fn grow_spans<'a>(
     source: RopeSlice,
     old: impl Iterator<Item = &'a Range> + Clone,
     spans: &mut Vec<Range>,
+    anchors: &mut Vec<Range>,
 ) {
+    let mut take = |spans: &mut Vec<Range>, extent: &Range| {
+        if extent.end - extent.start >= ANCHOR_MIN
+            && intersects_any(spans, extent)
+            && !contains_any(spans, extent)
+        {
+            if !anchors.contains(extent) {
+                anchors.push(extent.clone());
+            }
+            return false;
+        }
+        absorb(spans, extent)
+    };
     loop {
         while old
             .clone()
-            .fold(false, |grew, extent| grew | absorb(spans, extent))
+            .fold(false, |grew, extent| grew | take(spans, extent))
         {}
         // A cursor only reports captures inside its range, so a span misses a match that also
         // has captures outside it (e.g. renaming `htmx!(..)` to `html!(..)` puts only the name
@@ -461,11 +598,12 @@ pub(crate) fn grow_spans<'a>(
             while let Some(query_match) = cursor.next_match() {
                 // A match without captures (e.g. a disabled `local.reference`) produces nothing.
                 if query_match.matched_nodes().next().is_some() {
-                    grew |= absorb(spans, &match_extent(depths, &query_match));
+                    grew |= take(spans, &match_extent(depths, &query_match));
                 }
             }
         }
         if !grew {
+            anchors.retain(|anchor| !contains_any(spans, anchor));
             return;
         }
     }
@@ -506,17 +644,25 @@ impl Syntax {
 
         // Only injections that intersect the spans are re-queried. Without spans, the whole layer is re-queried.
         let spans = spans.unwrap_or_else(|| std::iter::once(0..u32::MAX).collect());
-        let (spans, matches) = injections_query.execute_narrowed(
+        let (spans, anchors, matches) = injections_query.execute_narrowed(
             &parse_tree.root_node(),
             source,
             loader,
             &all_old,
+            |layer| {
+                let layer = self.layer(layer);
+                layer.combined_scope.is_none().then_some(layer.language)
+            },
+            &parent_ranges,
             spans,
         );
-        // Old injections that intersect a span lie inside it and get replaced.
-        let (old_in_span, retained): (Vec<_>, Vec<_>) = all_old
-            .into_iter()
-            .partition(|injection| intersects_any(&spans, &injection.range));
+        // Old injections that intersect a span lie inside it and get replaced, unless they
+        // belong to a kept anchor.
+        let (old_in_span, retained): (Vec<_>, Vec<_>) =
+            all_old.into_iter().partition(|injection| {
+                intersects_any(&spans, &injection.range)
+                    && !anchors.contains(&injection.pattern_range)
+            });
         // New matches of a combined pattern reuse the layer of its kept injections. Marking the
         // layer as reused stops other matches from taking it.
         let mut preseeded: HashMap<InjectionScope, Layer> = HashMap::new();
@@ -606,6 +752,7 @@ impl Syntax {
                     range,
                     layer,
                     pattern_range: mat.extent.clone(),
+                    pattern: mat.pattern,
                 });
             }
             if old_len != insert_position {
@@ -950,6 +1097,12 @@ pub(crate) fn absorb(spans: &mut Vec<Range>, range: &Range) -> bool {
     let grew = hi - lo > 1 || merged != spans[lo];
     spans.splice(lo..hi, [merged]);
     grew
+}
+
+/// Whether one of the sorted, non-overlapping `spans` contains `range`.
+fn contains_any(spans: &[Range], range: &Range) -> bool {
+    let i = spans.partition_point(|span| span.end < range.end);
+    spans.get(i).is_some_and(|span| span.start <= range.start)
 }
 
 /// Whether `range` intersects any of the sorted, non-overlapping `spans`.

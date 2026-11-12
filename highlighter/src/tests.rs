@@ -131,6 +131,12 @@ impl TestLanguageLoader {
         self.lang_config[lang.idx()] = OnceCell::new();
     }
 
+    fn overwrite_locals(&mut self, lang: &str, content: String) {
+        let lang = self.get(lang);
+        self.overwrites[lang.idx()].locals = Some(content);
+        self.lang_config[lang.idx()] = OnceCell::new();
+    }
+
     fn shadow_injections(&mut self, lang: &str, content: &str) {
         let lang = self.get(lang);
         let skidder_config = skidder_config();
@@ -1738,6 +1744,212 @@ fn narrowed_locals_missing_node() {
         )
         .unwrap();
     assert_matches_fresh(&loader, lang, &syntax, t1);
+}
+
+#[test]
+fn edits_inside_anchors() {
+    let loader = TestLanguageLoader::new();
+    let lang = loader.get("markdown");
+    let mut text = String::from("# t\n\n```rust\n/// doc\nfn big(a: u32) -> u32 {\n");
+    for i in 0..40 {
+        text.push_str(&format!("    let value_{i} = a + {i};\n"));
+    }
+    text.push_str("    a\n}\n```\n");
+    assert!(text.len() > 1024, "the fence and `big` must be anchored");
+    let mut syntax = Syntax::new(text.as_str().into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+    let body = text.find("value_20").unwrap();
+    let info = text.find("rust").unwrap() + 4;
+    // Two edits inside the fence and `big`, whose matches don't change. Then rename the fence's
+    // language to `html` (same match, new language) and to `htmly` (no match).
+    for (start, old_end, insert) in [
+        (body, body, "y"),
+        (body, body + 1, ""),
+        (info - 4, info, "html"),
+        (info, info, "y"),
+    ] {
+        text.replace_range(start..old_end, insert);
+        let e = edit(start as u32, old_end as u32, (start + insert.len()) as u32);
+        syntax
+            .update(text.as_str().into(), PARSE_TIMEOUT, &[e], &loader)
+            .unwrap();
+        assert_matches_fresh(&loader, lang, &syntax, &text);
+    }
+}
+
+/// Applies one edit inserting `insert` at `pos` and compares with a fresh parse.
+fn insert_matches_fresh(
+    loader: &TestLanguageLoader,
+    lang: Language,
+    t0: &str,
+    pos: usize,
+    insert: &str,
+) {
+    let mut t1 = t0.to_owned();
+    t1.insert_str(pos, insert);
+    let mut syntax = Syntax::new(t0.into(), lang, PARSE_TIMEOUT, loader).unwrap();
+    let e = edit(pos as u32, pos as u32, (pos + insert.len()) as u32);
+    syntax
+        .update(t1.as_str().into(), PARSE_TIMEOUT, &[e], loader)
+        .unwrap();
+    assert_matches_fresh(loader, lang, &syntax, &t1);
+}
+
+/// A capture at different depths in a pattern's alternatives puts some match roots too high.
+/// Here a raw string's extent becomes the whole file, so the re-run must start matches below
+/// the file's children.
+#[test]
+fn anchor_depth_spread_injections() {
+    let mut loader = TestLanguageLoader::new();
+    loader.overwrite_injections(
+        "rust",
+        r#"([(macro_invocation (token_tree (string_literal) @injection.content))
+             (raw_string_literal) @injection.content]
+            (#set! injection.language "comment"))"#
+            .to_owned(),
+    );
+    let lang = loader.get("rust");
+    let t0 = format!(
+        "// {}\nstatic S: &str = \"x\";\nfn main() {{}}\n",
+        "p".repeat(1100)
+    );
+    let pos = t0.find("\"x\"").unwrap();
+    insert_matches_fresh(&loader, lang, &t0, pos, "r");
+}
+
+#[test]
+fn anchor_depth_spread_locals() {
+    let mut loader = TestLanguageLoader::new();
+    loader.overwrite_locals(
+        "rust",
+        r#"[(function_item) (block)] @local.scope
+           [(parameter (identifier) @local.definition.variable.parameter)
+            (let_declaration
+              pattern: (tuple_pattern (tuple_pattern (identifier) @local.definition.variable.parameter)))]
+           (identifier) @local.reference"#
+            .to_owned(),
+    );
+    let lang = loader.get("rust");
+    let t0 = format!("fn f() {{\n    // {}\n    a\n}}\n", "p".repeat(1100));
+    let pos = t0.find("()").unwrap() + 1;
+    insert_matches_fresh(&loader, lang, &t0, pos, "a: u32");
+}
+
+/// A match that lost to an anchored match has no injection in the old results. When it wins
+/// again, the anchor's re-run must not count it as unchanged.
+#[test]
+fn anchor_shadowed_match_returns() {
+    let mut loader = TestLanguageLoader::new();
+    loader.overwrite_injections(
+        "rust",
+        r#"((macro_invocation (token_tree) @injection.content)
+            (#set! injection.language "comment"))
+           ((token_tree) @injection.content
+            (#match? @injection.content "x")
+            (#set! injection.language "html"))"#
+            .to_owned(),
+    );
+    let lang = loader.get("rust");
+    let pad = "p".repeat(1100);
+    let t0 = format!("fn pad() {{ let a = 1; }}\nm!(x {pad});\n");
+    let t1 = format!("fn pad() {{ let a = 1; }}\nm!(y {pad});\n");
+    let pos = t0.find("(x").unwrap() as u32 + 1;
+    let mut syntax = Syntax::new(t0.as_str().into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+    for text in [t1.as_str(), t0.as_str()] {
+        syntax
+            .update(
+                text.into(),
+                PARSE_TIMEOUT,
+                &[edit(pos, pos + 1, pos + 1)],
+                &loader,
+            )
+            .unwrap();
+        assert_matches_fresh(&loader, lang, &syntax, text);
+    }
+}
+
+/// The comment pattern beats `low!` and loses to `top!`. An injection that includes its
+/// children competes with the injections nested in it by pattern order.
+const MACROS_AROUND_COMMENT_INJECTION: &str = r#"
+((macro_invocation (identifier) @_macro (token_tree) @injection.content)
+ (#eq? @_macro "low")
+ (#set! injection.language "html")
+ (#set! injection.include-children))
+((line_comment) @injection.content
+ (#set! injection.language "comment"))
+((macro_invocation (identifier) @_macro (token_tree) @injection.content)
+ (#eq? @_macro "top")
+ (#set! injection.language "html")
+ (#set! injection.include-children))"#;
+
+/// Applies single edits `(start, old_end, inserted)` to `text`, comparing each update with
+/// a fresh parse.
+fn anchored_edits_match_fresh(injections: &str, mut text: String, edits: &[(usize, usize, &str)]) {
+    let mut loader = TestLanguageLoader::new();
+    loader.overwrite_injections("rust", injections.to_owned());
+    let lang = loader.get("rust");
+    let mut syntax = Syntax::new(text.as_str().into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+    for &(start, old_end, insert) in edits {
+        text.replace_range(start..old_end, insert);
+        let e = edit(start as u32, old_end as u32, (start + insert.len()) as u32);
+        syntax
+            .update(text.as_str().into(), PARSE_TIMEOUT, &[e], &loader)
+            .unwrap();
+        assert_matches_fresh(&loader, lang, &syntax, &text);
+    }
+}
+
+/// Renaming `top!` to `low!` keeps the injection's ranges and language, but it now matches
+/// the pattern that loses to the nested comment, so its anchor must not be kept.
+#[test]
+fn anchor_pattern_change() {
+    let text = format!(
+        "fn pad() {{}}\ntop!(<p>x</p> {} // c\n);\n",
+        "p".repeat(1100)
+    );
+    let name = text.find("top").unwrap();
+    anchored_edits_match_fresh(
+        MACROS_AROUND_COMMENT_INJECTION,
+        text,
+        &[(name, name + 3, "low"), (name, name + 3, "top")],
+    );
+}
+
+/// A comment appearing inside the anchored macro's token tree beats its unchanged match.
+#[test]
+fn anchor_overlapped() {
+    let text = format!("fn pad() {{}}\nlow!(<p>x</p> {} c\n);\n", "p".repeat(1100));
+    let comment = text.find(" c\n").unwrap() + 1;
+    anchored_edits_match_fresh(
+        MACROS_AROUND_COMMENT_INJECTION,
+        text,
+        &[(comment, comment, "// "), (comment, comment + 3, "")],
+    );
+}
+
+/// Both patterns capture a parameter's identifier, rooted at the identifier and at the
+/// parameter list. Deleting the space after `x` re-queries only the first, so the anchored
+/// capture would sort before it.
+#[test]
+fn anchor_shared_capture_start() {
+    let mut loader = TestLanguageLoader::new();
+    loader.overwrite_locals(
+        "python",
+        r#"(function_definition) @local.scope
+           ((identifier) @local.definition.variable)
+           (parameters (identifier) @local.definition.variable.parameter)"#
+            .to_owned(),
+    );
+    let lang = loader.get("python");
+    let t0 = format!("def f(x , y=\"{}\"):\n    pass\n", "p".repeat(1100));
+    let pos = t0.find(" ,").unwrap();
+    let mut t1 = t0.clone();
+    t1.remove(pos);
+    let mut syntax = Syntax::new(t0.as_str().into(), lang, PARSE_TIMEOUT, &loader).unwrap();
+    let e = edit(pos as u32, pos as u32 + 1, pos as u32);
+    syntax
+        .update(t1.as_str().into(), PARSE_TIMEOUT, &[e], &loader)
+        .unwrap();
+    assert_matches_fresh(&loader, lang, &syntax, &t1);
 }
 
 /// Randomized sweep of multi-edit transactions (1-3 edits each) with edits around injection boundaries.

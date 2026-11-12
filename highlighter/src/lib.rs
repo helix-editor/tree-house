@@ -6,7 +6,7 @@ use slab::Slab;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
-use tree_sitter::{IncompatibleGrammarError, Node, Tree};
+use tree_sitter::{IncompatibleGrammarError, Node, Pattern, Tree};
 
 pub use crate::config::{read_query, LanguageConfig, LanguageLoader};
 pub use crate::injections_query::{InjectionLanguageMarker, InjectionsQuery};
@@ -212,6 +212,7 @@ pub struct Injection {
     /// Range of the node the match is rooted at. A narrowed query must cover all of it to find
     /// the match again.
     pattern_range: Range,
+    pattern: Pattern,
 }
 
 #[derive(Debug, Clone)]
@@ -339,7 +340,7 @@ type Range = std::ops::Range<u32>;
 
 #[cfg(test)]
 mod unit_tests {
-    use super::{Injection, Language, Layer, LayerData};
+    use super::{Injection, Language, Layer, LayerData, Pattern};
     use crate::locals::Locals;
     use crate::parse::LayerUpdateFlags;
 
@@ -348,6 +349,7 @@ mod unit_tests {
             range: start..end,
             layer: Layer(0),
             pattern_range: start..end,
+            pattern: Pattern::SENTINEL,
         }
     }
 

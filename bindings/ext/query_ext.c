@@ -41,3 +41,25 @@ bool ts_query_pattern_capture_depths(
   }
   return needs_parent;
 }
+
+// The largest difference between the depths of one capture in the pattern's alternatives.
+// A match can be rooted up to this many levels below where its capture depths place it.
+uint32_t ts_query_pattern_depth_spread(const TSQuery *self, uint32_t pattern_index) {
+  const QueryPattern *pattern = array_get(&self->patterns, pattern_index);
+  uint32_t start = pattern->steps.offset, end = start + pattern->steps.length;
+  uint32_t spread = 0;
+  for (uint32_t c = 0; c < ts_query_capture_count(self); c++) {
+    uint32_t min = UINT32_MAX, max = 0;
+    for (uint32_t i = start; i < end; i++) {
+      const QueryStep *step = array_get(&self->steps, i);
+      if (step->depth == PATTERN_DONE_MARKER) continue;
+      for (unsigned k = 0; k < MAX_STEP_CAPTURE_COUNT && step->capture_ids[k] != NONE; k++) {
+        if (step->capture_ids[k] != c) continue;
+        if (step->depth < min) min = step->depth;
+        if (step->depth > max) max = step->depth;
+      }
+    }
+    if (min != UINT32_MAX && max - min > spread) spread = max - min;
+  }
+  return spread;
+}
