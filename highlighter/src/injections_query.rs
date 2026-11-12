@@ -1048,6 +1048,19 @@ impl<'a> EditMap<'a> {
         self.map(pos, true)
     }
 
+    /// One edit that shifts a tree after the first `count` edits by their total size change.
+    pub(crate) fn shift(&self, count: usize) -> tree_sitter::InputEdit {
+        let offset = self.offsets[count];
+        tree_sitter::InputEdit {
+            start_byte: 0,
+            old_end_byte: (-offset).max(0) as u32,
+            new_end_byte: offset.max(0) as u32,
+            start_point: tree_sitter::Point::ZERO,
+            old_end_point: tree_sitter::Point::ZERO,
+            new_end_point: tree_sitter::Point::ZERO,
+        }
+    }
+
     /// The text each edit inserted, in new coordinates.
     pub(crate) fn edited_regions(&self) -> Vec<Range> {
         self.edits

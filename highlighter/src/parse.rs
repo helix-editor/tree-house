@@ -46,17 +46,19 @@ impl Syntax {
                 continue;
             }
             // The old tree stays valid without a re-parse when no edit touched the text under it
-            // and its included ranges haven't changed. Text before the first edit has the same
-            // offsets in old and new coordinates, so an edit starting past the layer's end
-            // doesn't move it.
-            let moved = edited
-                .first()
-                .is_some_and(|first| first.start <= layer_data.ranges.last().unwrap().end_byte);
+            // and its included ranges haven't changed. Edits that start after the layer's end
+            // don't affect it.
+            let end = layer_data.ranges.last().unwrap().end_byte;
+            let reaching = edited.partition_point(|region| region.start <= end);
+            let moved = reaching > 0;
             let reparse = match &mut layer_data.parse_tree {
                 Some(tree) => {
-                    if moved {
+                    if moved && edited[reaching - 1].end < layer_data.ranges[0].start_byte {
+                        // These edits all end before the layer, so they only shift its tree.
+                        tree.edit(&map.shift(reaching));
+                    } else {
                         // Edits are in old coordinates: applying them in reverse keeps them valid.
-                        for edit in edits.iter().rev() {
+                        for edit in edits[..reaching].iter().rev() {
                             tree.edit(edit);
                         }
                     }
