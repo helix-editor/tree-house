@@ -71,8 +71,8 @@ impl Syntax {
     }
 
     /// Re-parses the layers touched by edits since the last successful parse, and re-runs
-    /// their queries. Stops with [`Error::Cancelled`] once `cancel` is set. A parse
-    /// that failed can be run again.
+    /// their queries. Stops with [`Error::Timeout`] once `timeout` has passed, or with
+    /// [`Error::Cancelled`] once `cancel` is set. A parse that failed can be run again.
     pub fn parse(
         &mut self,
         source: RopeSlice,
@@ -106,9 +106,13 @@ impl Syntax {
                 .collect(),
         );
 
+        let deadline = Instant::now() + timeout;
         while let Some(layer) = queue.pop() {
             if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) {
                 return Err(Error::Cancelled);
+            }
+            if Instant::now() >= deadline {
+                return Err(Error::Timeout);
             }
             let layer_data = self.layer_mut(layer);
             if layer_data.ranges.is_empty() {
@@ -129,7 +133,7 @@ impl Syntax {
                 // Text edits can change a match without changing the structure (e.g. renaming
                 // an injected language), so the edits count as changed regions too.
                 layer_data
-                    .parse(&mut parser, source, timeout, cancel, loader)?
+                    .parse(&mut parser, source, deadline, cancel, loader)?
                     .map(|mut spans| {
                         spans.extend_from_slice(&edit_spans);
                         merge_spans(spans)
@@ -180,7 +184,7 @@ impl LayerData {
         &mut self,
         parser: &mut Parser,
         source: RopeSlice,
-        timeout: Duration,
+        deadline: Instant,
         cancel: Option<&AtomicBool>,
         loader: &impl LanguageLoader,
     ) -> Result<Option<Vec<Range>>, Error> {
@@ -202,7 +206,6 @@ impl LayerData {
             .as_ref()
             .filter(|tree| tree_has_ranges(tree, &self.ranges));
 
-        let deadline = Instant::now() + timeout;
         let mut cancelled = false;
         let mut progress = |_: &_| {
             cancelled = cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed));
