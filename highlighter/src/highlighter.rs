@@ -320,7 +320,9 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
                 break;
             };
             match query_event {
-                QueryIterEvent::EnterInjection(injection) => self.enter_injection(injection.layer),
+                QueryIterEvent::EnterInjection(injection) => {
+                    self.enter_injection(injection.layer, pos)
+                }
                 QueryIterEvent::Match(node) => self.start_highlight(
                     node,
                     &mut first_highlight,
@@ -372,7 +374,7 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
         self.next_highlight_end = self
             .active_highlights
             .last()
-            .map_or(u32::MAX, |node| node.end);
+            .map_or(u32::MAX, |node| node.end.max(pos));
 
         if refresh {
             (
@@ -394,10 +396,13 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
         // `QueryIter::next`.
         self.current_layer = self.query.current_layer();
         let event = replace(&mut self.next_query_event, self.query.next());
+        // An edited tree that wasn't re-parsed can have overlapping nodes, so its events can go
+        // backwards.
         self.next_highlight_start = self
             .next_query_event
             .as_ref()
-            .map_or(u32::MAX, |event| event.start_byte());
+            .map_or(u32::MAX, |event| event.start_byte())
+            .max(self.next_highlight_start);
         event
     }
 
@@ -405,7 +410,7 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
         let i = self
             .active_highlights
             .iter()
-            .rposition(|highlight| highlight.end != pos)
+            .rposition(|highlight| highlight.end > pos)
             .map_or(0, |i| i + 1);
         self.active_highlights.truncate(i);
     }
@@ -420,7 +425,7 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
         &self.active_highlights[parent_start..]
     }
 
-    fn enter_injection(&mut self, layer: Layer) {
+    fn enter_injection(&mut self, layer: Layer, pos: u32) {
         debug_assert_eq!(layer, self.current_layer);
         let active_language = self.query.syntax().layer(layer).language;
         let config = self.query.loader().0.get_config(active_language);
@@ -428,6 +433,10 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
 
         let state = self.layer_states.entry(layer).or_default();
         state.parent_highlights = self.active_highlights.len();
+        // Only an edited tree that wasn't re-parsed has highlights that end between ranges.
+        state
+            .dormant_highlights
+            .retain(|highlight| highlight.end > pos);
         self.active_highlights.append(&mut state.dormant_highlights);
     }
 
@@ -564,7 +573,12 @@ impl<'a, 'tree: 'a, Loader: LanguageLoader> Highlighter<'a, 'tree, Loader> {
             // The highlight is removed from `active_highlights` as the injection layer ends
             // so the wider assertion would be true in practice. We don't track the injection
             // end right here though so we can't assert on it.
-            self.current_layer_highlights().is_sorted_by_key(|h| cmp::Reverse(h.end)),
+            //
+            // An edited tree that wasn't re-parsed can have overlapping nodes.
+            !self.query.syntax().edited.is_empty()
+                || self
+                    .current_layer_highlights()
+                    .is_sorted_by_key(|h| cmp::Reverse(h.end)),
             "unsorted highlights on layer {:?}: {:?}\nall active highlights must be sorted by `end` descending",
             self.current_layer,
             self.active_highlights,

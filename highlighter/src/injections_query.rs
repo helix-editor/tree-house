@@ -827,10 +827,14 @@ impl Syntax {
             return;
         }
         for injection in &mut self.layer_mut(layer).injections {
-            injection.range = map.down(injection.range.start)..map.up(injection.range.end);
+            injection.range = map.down(injection.range.start)..map.down(injection.range.end);
             injection.pattern_range =
                 map.down(injection.pattern_range.start)..map.up(injection.pattern_range.end);
         }
+        // A deletion can leave an injection empty. A fresh parse never has empty injections.
+        self.layer_mut(layer)
+            .injections
+            .retain(|injection| !injection.range.is_empty());
     }
 
     fn init_injection(

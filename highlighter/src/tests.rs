@@ -906,6 +906,8 @@ fn update_matches_fresh(
     for edits in batches {
         syntax.edit(edits);
     }
+    // Editors draw the syntax right after editing, but before re-parsing.
+    render(loader, syntax, text);
     match syntax.parse(text.into(), PARSE_TIMEOUT, None, loader) {
         Ok(()) => {}
         // Slow machines (valgrind) may time out, start over from a fresh parse.
